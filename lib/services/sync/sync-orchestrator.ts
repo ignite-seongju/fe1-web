@@ -94,10 +94,23 @@ export class SyncOrchestrator {
         `${fehgTickets.length}개의 FEHG 티켓 발견 - 동기화 시작`
       );
 
-      // 4. 프로젝트별 동기화 실행
+      // 4. 티켓별 대상 프로젝트 결정 (1회 순회)
+      this.logger.info('티켓별 동기화 대상 분석 중...');
+      const ticketsByProject = await this.classifyTicketsByTargetProject(
+        fehgTickets,
+        targetProjects
+      );
+
+      // 5. 프로젝트별 동기화 실행
       for (const targetProject of targetProjects) {
+        const projectTickets = ticketsByProject.get(targetProject) || [];
+        if (projectTickets.length === 0) {
+          this.logger.info(`${targetProject}: 동기화 대상 티켓 없음 - 스킵`);
+          continue;
+        }
+
         const results = await this.syncToProject(
-          fehgTickets,
+          projectTickets,
           targetProject,
           options.assigneeAccountId,
           options.chunkSize || 15
@@ -159,7 +172,84 @@ export class SyncOrchestrator {
   }
 
   /**
+   * 티켓별 대상 프로젝트 분류 (1회 순회로 효율화)
+   */
+  private async classifyTicketsByTargetProject(
+    fehgTickets: JiraIssue[],
+    targetProjects: Array<'KQ' | 'HDD' | 'HB' | 'AUTOWAY'>
+  ): Promise<Map<'KQ' | 'HDD' | 'HB' | 'AUTOWAY', JiraIssue[]>> {
+    const classification = new Map<
+      'KQ' | 'HDD' | 'HB' | 'AUTOWAY',
+      JiraIssue[]
+    >();
+
+    // 초기화
+    targetProjects.forEach((project) => classification.set(project, []));
+
+    // 1회 순회로 각 티켓의 대상 프로젝트 결정
+    for (const ticket of fehgTickets) {
+      const targets: Array<'KQ' | 'HDD' | 'HB' | 'AUTOWAY'> = [];
+
+      // 1. 연결된 티켓 확인 (issuelinks - KQ/HB/HDD)
+      if (ticket.fields.issuelinks) {
+        for (const link of ticket.fields.issuelinks) {
+          if (link.type.name === 'Blocks' && link.outwardIssue) {
+            const key = link.outwardIssue.key;
+            if (key.startsWith('KQ-') && targetProjects.includes('KQ')) {
+              targets.push('KQ');
+            } else if (key.startsWith('HB-') && targetProjects.includes('HB')) {
+              targets.push('HB');
+            } else if (
+              key.startsWith('HDD-') &&
+              targetProjects.includes('HDD')
+            ) {
+              targets.push('HDD');
+            }
+          }
+        }
+      }
+
+      // 2. AUTOWAY 확인 (customfield_10306 또는 허용된 에픽)
+      if (targetProjects.includes('AUTOWAY')) {
+        const hmgLink = ticket.fields['customfield_10306'] as
+          | string
+          | undefined;
+        const hasAutowayLink = hmgLink && /AUTOWAY-\d+/.test(hmgLink);
+
+        const parentKey = ticket.fields.parent?.key;
+        const match = parentKey?.match(/FEHG-(\d+)/);
+        const epicNumber = match ? parseInt(match[1], 10) : null;
+        const isAllowedEpic =
+          epicNumber &&
+          (ALLOWED_FEHG_TO_HMG_EPIC_IDS as readonly number[]).includes(
+            epicNumber
+          );
+
+        if (hasAutowayLink || isAllowedEpic) {
+          targets.push('AUTOWAY');
+        }
+      }
+
+      // 3. 각 대상 프로젝트에 티켓 추가
+      targets.forEach((target) => {
+        classification.get(target)?.push(ticket);
+      });
+    }
+
+    // 분류 결과 로그
+    targetProjects.forEach((project) => {
+      const count = classification.get(project)?.length || 0;
+      if (count > 0) {
+        this.logger.info(`${project}: ${count}개 티켓 동기화 대상`);
+      }
+    });
+
+    return classification;
+  }
+
+  /**
    * 특정 프로젝트로 동기화 (청킹 적용)
+   * 이미 분류된 티켓만 받음 - 필터링 불필요
    */
   private async syncToProject(
     fehgTickets: JiraIssue[],
@@ -169,65 +259,8 @@ export class SyncOrchestrator {
   ): Promise<SyncResult[]> {
     this.logger.info(`━━━ ${targetProject} 동기화 시작 ━━━`);
 
-    const originalCount = fehgTickets.length;
-    let ticketsToSync = fehgTickets;
-
-    if (targetProject === 'AUTOWAY') {
-      // AUTOWAY: 허용된 에픽 하위 티켓만
-      ticketsToSync = fehgTickets.filter((ticket) => {
-        const parentKey = ticket.fields.parent?.key;
-        if (!parentKey) return false;
-
-        const match = parentKey.match(/FEHG-(\d+)/);
-        if (!match) return false;
-
-        const epicNumber = parseInt(match[1], 10);
-        return (ALLOWED_FEHG_TO_HMG_EPIC_IDS as readonly number[]).includes(
-          epicNumber
-        );
-      });
-
-      this.logger.info(
-        `AUTOWAY 대상 필터링: ${originalCount}개 → ${ticketsToSync.length}개`
-      );
-
-      if (ticketsToSync.length === 0) {
-        this.logger.warning('AUTOWAY 동기화 대상 티켓이 없습니다');
-        return [];
-      }
-    } else {
-      // KQ/HB/HDD: AUTOWAY 허용 에픽 하위 티켓 제외
-      ticketsToSync = fehgTickets.filter((ticket) => {
-        const parentKey = ticket.fields.parent?.key;
-        if (!parentKey) return true; // 에픽 없는 티켓은 포함
-
-        const match = parentKey.match(/FEHG-(\d+)/);
-        if (!match) return true;
-
-        const epicNumber = parseInt(match[1], 10);
-        const isAutowayEpic = (
-          ALLOWED_FEHG_TO_HMG_EPIC_IDS as readonly number[]
-        ).includes(epicNumber);
-
-        // AUTOWAY 에픽이면 제외
-        return !isAutowayEpic;
-      });
-
-      const filteredCount = originalCount - ticketsToSync.length;
-      if (filteredCount > 0) {
-        this.logger.info(
-          `${targetProject} 대상 필터링: ${originalCount}개 → ${ticketsToSync.length}개 (AUTOWAY 전용 에픽 ${filteredCount}개 제외)`
-        );
-      }
-
-      if (ticketsToSync.length === 0) {
-        this.logger.warning(`${targetProject} 동기화 대상 티켓이 없습니다`);
-        return [];
-      }
-    }
-
     const allResults: SyncResult[] = [];
-    const chunks = chunkArray(ticketsToSync, chunkSize);
+    const chunks = chunkArray(fehgTickets, chunkSize);
 
     for (let i = 0; i < chunks.length; i++) {
       const chunk = chunks[i];

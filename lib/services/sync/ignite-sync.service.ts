@@ -114,14 +114,18 @@ export class IgniteSyncService {
 
       this.logger.success(`${targetKey}: 필드 업데이트 완료`);
 
-      // 3. 상태 동기화
-      const fehgStatusId = fehgTicket.fields.status?.id;
-      if (fehgStatusId) {
-        const transitionId = mapStatusTransition(fehgStatusId, targetProject);
-        if (transitionId) {
-          await jira.ignite.updateIssueStatus(targetKey, transitionId);
-          this.logger.success(`${targetKey}: 상태 동기화 완료`);
+      // 3. 상태 동기화 (HDD는 권한 문제로 제외)
+      if (targetProject !== 'HDD') {
+        const fehgStatusId = fehgTicket.fields.status?.id;
+        if (fehgStatusId) {
+          const transitionId = mapStatusTransition(fehgStatusId, targetProject);
+          if (transitionId) {
+            await jira.ignite.updateIssueStatus(targetKey, transitionId);
+            this.logger.success(`${targetKey}: 상태 동기화 완료`);
+          }
         }
+      } else {
+        this.logger.info(`${targetKey}: 상태 동기화 스킵 (HDD는 제외)`);
       }
 
       return {
