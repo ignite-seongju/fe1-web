@@ -1,0 +1,150 @@
+// Ignite Jira 프로젝트 동기화 (FEHG → KQ/HDD/HB)
+
+import { JiraIssue } from '@/lib/types/jira';
+import { SyncResult, SyncTargetProject } from './types';
+import { SyncLogger } from './logger';
+import { mapFieldsForIgniteProject, mapStatusTransition } from './field-mapper';
+import { jira } from '@/lib/services/jira';
+
+/**
+ * Ignite 프로젝트 동기화 서비스
+ * FEHG → KQ/HDD/HB 동기화 담당
+ */
+export class IgniteSyncService {
+  constructor(private logger: SyncLogger) {}
+
+  /**
+   * FEHG 티켓의 연결된 타겟 티켓 찾기 (blocks 관계)
+   */
+  private findLinkedTickets(
+    fehgTicket: JiraIssue,
+    targetProject: SyncTargetProject
+  ): string[] {
+    const issuelinks = fehgTicket.fields.issuelinks;
+    if (!issuelinks || issuelinks.length === 0) {
+      return [];
+    }
+
+    const linkedKeys: string[] = [];
+    const projectPrefix = `${targetProject}-`;
+
+    for (const link of issuelinks) {
+      // Blocks 관계 확인
+      if (link.type?.name === 'Blocks' && link.outwardIssue) {
+        const targetKey = link.outwardIssue.key;
+        // 프로젝트 prefix 매칭
+        if (targetKey.startsWith(projectPrefix)) {
+          linkedKeys.push(targetKey);
+        }
+      }
+    }
+
+    return linkedKeys;
+  }
+
+  /**
+   * 단일 FEHG 티켓을 대상 프로젝트로 동기화
+   */
+  async syncTicket(
+    fehgTicket: JiraIssue,
+    targetProject: 'KQ' | 'HDD' | 'HB'
+  ): Promise<SyncResult[]> {
+    const results: SyncResult[] = [];
+
+    try {
+      // 1. 연결된 티켓 찾기
+      const linkedKeys = this.findLinkedTickets(fehgTicket, targetProject);
+
+      if (linkedKeys.length === 0) {
+        this.logger.warning(
+          `${fehgTicket.key}: ${targetProject}와 연결된 티켓 없음`
+        );
+        return [];
+      }
+
+      this.logger.info(
+        `${fehgTicket.key}: ${linkedKeys.length}개의 ${targetProject} 티켓 발견 (${linkedKeys.join(', ')})`
+      );
+
+      // 2. 각 연결된 티켓 업데이트
+      for (const targetKey of linkedKeys) {
+        const result = await this.updateTargetTicket(
+          fehgTicket,
+          targetKey,
+          targetProject
+        );
+        results.push(result);
+      }
+
+      return results;
+    } catch (error) {
+      this.logger.error(
+        `${fehgTicket.key}: 동기화 중 예외 발생 - ${error instanceof Error ? error.message : String(error)}`
+      );
+      return results;
+    }
+  }
+
+  /**
+   * 대상 티켓 업데이트 (필드 + 상태)
+   */
+  private async updateTargetTicket(
+    fehgTicket: JiraIssue,
+    targetKey: string,
+    targetProject: 'KQ' | 'HDD' | 'HB'
+  ): Promise<SyncResult> {
+    try {
+      this.logger.info(`${targetKey}: 업데이트 시작...`);
+
+      // 1. 필드 매핑 (스프린트 매핑 포함)
+      const mappedFields = await mapFieldsForIgniteProject(
+        fehgTicket,
+        targetProject
+      );
+
+      // 2. 필드 업데이트
+      const updateResult = await jira.ignite.updateIssueFields(
+        targetKey,
+        mappedFields
+      );
+
+      if (!updateResult.success) {
+        throw new Error(updateResult.error || '필드 업데이트 실패');
+      }
+
+      this.logger.success(`${targetKey}: 필드 업데이트 완료`);
+
+      // 3. 상태 동기화
+      const fehgStatusId = fehgTicket.fields.status?.id;
+      if (fehgStatusId) {
+        const transitionId = mapStatusTransition(fehgStatusId, targetProject);
+        if (transitionId) {
+          await jira.ignite.updateIssueStatus(targetKey, transitionId);
+          this.logger.success(`${targetKey}: 상태 동기화 완료`);
+        }
+      }
+
+      return {
+        fehgKey: fehgTicket.key,
+        targetKey,
+        targetProject,
+        success: true,
+        message: '동기화 완료',
+        isNewlyCreated: false,
+      };
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      this.logger.error(`${targetKey}: 업데이트 실패 - ${errorMessage}`);
+
+      return {
+        fehgKey: fehgTicket.key,
+        targetKey,
+        targetProject,
+        success: false,
+        error: errorMessage,
+        isNewlyCreated: false,
+      };
+    }
+  }
+}

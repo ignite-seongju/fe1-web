@@ -1,0 +1,59 @@
+// 동기화 관련 타입 정의
+
+// 동기화 대상 프로젝트
+export type SyncTargetProject = 'KQ' | 'HDD' | 'HB' | 'AUTOWAY';
+
+// 동기화 모드
+export type SyncMode =
+  | '전체'
+  | `FEHG -> ${SyncTargetProject}`
+  | '에픽 지정'
+  | '티켓 지정';
+
+// 동기화 결과
+export interface SyncResult {
+  fehgKey: string;
+  targetKey: string;
+  targetProject: SyncTargetProject;
+  success: boolean;
+  message?: string;
+  error?: string;
+  isNewlyCreated?: boolean; // 신규 생성 여부
+}
+
+// 동기화 요약
+export interface SyncSummary {
+  totalProcessed: number;
+  totalSuccess: number;
+  totalFailed: number;
+  totalUpdated: number; // 필드 동기화 (업데이트)
+  totalCreated: number; // 신규 생성
+  results: SyncResult[];
+  failedResults: SyncResult[];
+}
+
+// 로그 타입
+export type LogLevel = 'info' | 'success' | 'warning' | 'error';
+
+export interface SyncLog {
+  timestamp: string;
+  level: LogLevel;
+  message: string;
+}
+
+// 스프린트 정보
+export interface SprintInfo {
+  id: number;
+  name: string;
+  state: 'active' | 'future' | 'closed';
+  boardId: number;
+}
+
+// 동기화 옵션
+export interface SyncOptions {
+  assigneeAccountId: string; // 담당자 Ignite accountId
+  targetProjects?: SyncTargetProject[]; // 대상 프로젝트 (없으면 전체)
+  epicId?: string; // 에픽 지정 모드
+  ticketId?: string; // 티켓 지정 모드
+  chunkSize?: number; // 청크 크기 (기본: 15)
+}

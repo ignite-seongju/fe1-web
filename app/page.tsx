@@ -1,65 +1,748 @@
-import Image from "next/image";
+'use client';
+
+import { useState, useRef, useEffect, type ReactNode } from 'react';
+import Link from 'next/link';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { RefreshCw, User, Plus, ExternalLink } from 'lucide-react';
+import { toast } from 'sonner';
+import {
+  JIRA_USER_LIST,
+  JIRA_USERS,
+  JIRA_ENDPOINTS,
+  // ALLOWED_FEHG_TO_HMG_EPIC_IDS, // handleCheckAutowayTargets에서 사용 (현재 주석 처리됨)
+  // IGNITE_CUSTOM_FIELDS, // handleMigrateOldHmgLinks에서 사용 (현재 주석 처리됨)
+} from '@/lib/constants/jira';
+// import { jira } from '@/lib/services/jira'; // handleCheckAutowayTargets에서 사용 (현재 주석 처리됨)
+// import { JiraIssue } from '@/lib/types/jira'; // 티켓 생성에서 사용 (현재 주석 처리됨)
+import {
+  SyncOrchestrator,
+  SyncLog,
+  SyncSummary,
+  SyncTargetProject,
+} from '@/lib/services/sync';
+
+const LOG_HIGHLIGHT_PATTERN =
+  '(FEHG-\\d+|KQ-\\d+|HDD-\\d+|HB-\\d+|AUTOWAY-\\d+|성공|실패|경고|오류|에러|동기화|완료)';
+
+function emphasizeLogMessage(message: string): ReactNode[] {
+  const regex = new RegExp(LOG_HIGHLIGHT_PATTERN, 'g');
+  const segments: ReactNode[] = [];
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(message)) !== null) {
+    if (match.index > lastIndex) {
+      segments.push(message.slice(lastIndex, match.index));
+    }
+
+    segments.push(
+      <span key={`${match.index}-${match[0]}`} className="font-semibold">
+        {match[0]}
+      </span>
+    );
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < message.length) {
+    segments.push(message.slice(lastIndex));
+  }
+
+  return segments.length > 0 ? segments : [message];
+}
 
 export default function Home() {
+  const [selectedUser, setSelectedUser] = useState<string>('');
+  const [userSelectError, setUserSelectError] = useState(false);
+  const [syncType, setSyncType] = useState<string>('전체'); // 기본값: 전체
+  const [epicOrTicketId, setEpicOrTicketId] = useState<string>('');
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  // 동기화 로그 및 결과
+  const [syncLogs, setSyncLogs] = useState<SyncLog[]>([]);
+  const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
+
+  const userSelectRef = useRef<HTMLButtonElement>(null);
+  const resultScrollRef = useRef<HTMLDivElement | null>(null);
+  const previousLogCountRef = useRef(0);
+
+  useEffect(() => {
+    const viewport = resultScrollRef.current?.querySelector<HTMLDivElement>(
+      '[data-radix-scroll-area-viewport]'
+    );
+
+    if (!viewport) return;
+
+    const behavior: ScrollBehavior =
+      syncLogs.length > previousLogCountRef.current ? 'smooth' : 'auto';
+    previousLogCountRef.current = syncLogs.length;
+
+    const scrollToBottom = () =>
+      viewport.scrollTo({
+        top: viewport.scrollHeight,
+        behavior,
+      });
+
+    if (behavior === 'smooth') {
+      requestAnimationFrame(scrollToBottom);
+    } else {
+      scrollToBottom();
+    }
+  }, [syncLogs]);
+
+  useEffect(() => {
+    if (!syncSummary) return;
+
+    const viewport = resultScrollRef.current?.querySelector<HTMLDivElement>(
+      '[data-radix-scroll-area-viewport]'
+    );
+
+    if (!viewport) return;
+
+    requestAnimationFrame(() =>
+      viewport.scrollTo({
+        top: viewport.scrollHeight,
+        behavior: 'smooth',
+      })
+    );
+  }, [syncSummary]);
+
+  // 에픽/티켓 지정 모드인지 확인
+  const isSpecificMode = syncType === '에픽 지정' || syncType === '티켓 지정';
+
+  // 동기화 타입 변경 시 추가 입력 초기화
+  const handleSyncTypeChange = (value: string) => {
+    setSyncType(value);
+    if (value !== '에픽 지정' && value !== '티켓 지정') {
+      setEpicOrTicketId('');
+    }
+  };
+
+  // 숫자만 입력 가능하도록 처리
+  const handleIdInput = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value.replace(/[^0-9]/g, '').slice(0, 10);
+    setEpicOrTicketId(value);
+  };
+
+  const handleUserChange = (value: string) => {
+    setSelectedUser(value);
+    if (value) {
+      setUserSelectError(false);
+    }
+  };
+
+  const handleSync = async () => {
+    // 사용자 선택 검증
+    if (!selectedUser) {
+      setUserSelectError(true);
+      toast.error('담당자를 선택해주세요.');
+      userSelectRef.current?.focus();
+      return;
+    }
+
+    // 동기화 타입 검증
+    if (!syncType) {
+      toast.error('동기화 유형을 선택해주세요.');
+      return;
+    }
+
+    // 에픽/티켓 지정 모드일 때 추가 검증
+    if (isSpecificMode) {
+      if (!epicOrTicketId) {
+        toast.error(
+          `${syncType === '에픽 지정' ? '에픽' : '티켓'} 번호를 입력해주세요.`
+        );
+        return;
+      }
+    }
+
+    setUserSelectError(false);
+    setIsSyncing(true);
+    setSyncLogs([]);
+    setSyncSummary(null);
+
+    try {
+      // 사용자 정보 가져오기
+      const userInfo = JIRA_USERS[selectedUser as keyof typeof JIRA_USERS];
+      if (!userInfo) {
+        toast.error('사용자 정보를 찾을 수 없습니다.');
+        return;
+      }
+
+      // 대상 프로젝트 결정
+      let targetProjects: SyncTargetProject[] | undefined;
+      if (syncType !== '전체') {
+        const match = syncType.match(/FEHG -> (\w+)/);
+        if (match) {
+          targetProjects = [match[1] as SyncTargetProject];
+        }
+      }
+
+      // 동기화 시작 메시지
+      let message = `${selectedUser} 담당자 - "${syncType}" 동기화를 시작합니다.`;
+      if (isSpecificMode) {
+        const fehgKey = `FEHG-${epicOrTicketId}`;
+        message = `${selectedUser} 담당자 - ${fehgKey} ${syncType === '에픽 지정' ? '에픽' : '티켓'} 동기화를 시작합니다.`;
+      }
+      toast.success(message);
+
+      // 동기화 실행
+      const orchestrator = new SyncOrchestrator((log) => {
+        setSyncLogs((prev) => [...prev, log]);
+      });
+
+      const summary = await orchestrator.execute({
+        assigneeAccountId: userInfo.igniteAccountId,
+        targetProjects,
+        epicId: syncType === '에픽 지정' ? epicOrTicketId : undefined,
+        ticketId: syncType === '티켓 지정' ? epicOrTicketId : undefined,
+        chunkSize: 15,
+      });
+
+      setSyncSummary(summary);
+
+      // 결과 토스트
+      if (summary.totalFailed === 0) {
+        toast.success(`동기화 완료! 총 ${summary.totalSuccess}개 티켓 처리`);
+      } else {
+        toast.warning(
+          `동기화 완료 (성공: ${summary.totalSuccess}, 실패: ${summary.totalFailed})`
+        );
+      }
+    } catch (error) {
+      toast.error(
+        `동기화 실패: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // AUTOWAY 동기화 대상 확인 (필요시 주석 해제하여 사용)
+  /* const handleCheckAutowayTargets = async () => {
+    // ... (전체 로직 생략)
+  }; */
+
+  // 구 HMG URL → 신 HMG URL 마이그레이션 (마이그레이션 완료로 현재 미사용)
+  // 필요시 주석 해제하여 사용
+  /* const handleMigrateOldHmgLinks = async () => {
+    // 사용자 선택 검증
+    if (!selectedUser) {
+      setUserSelectError(true);
+      toast.error('담당자를 선택해주세요.');
+      userSelectRef.current?.focus();
+      return;
+    }
+
+    setUserSelectError(false);
+    setIsSyncing(true);
+    setSyncLogs([]);
+    setSyncSummary(null);
+
+    try {
+      // 사용자 정보 가져오기
+      const userInfo = JIRA_USERS[selectedUser as keyof typeof JIRA_USERS];
+      if (!userInfo) {
+        toast.error('사용자 정보를 찾을 수 없습니다.');
+        return;
+      }
+
+      setSyncLogs([
+        {
+          timestamp: new Date().toLocaleTimeString('ko-KR'),
+          level: 'info',
+          message: `→ ${selectedUser} 담당자의 구 HMG 링크 마이그레이션 시작...`,
+        },
+      ]);
+
+      // FEHG 티켓 조회 (모든 상태)
+      const jql = `project = FEHG AND assignee = "${userInfo.igniteAccountId}" ORDER BY updated DESC`;
+      const result = await jira.ignite.searchAllIssues(jql);
+
+      if (!result.success || !result.data) {
+        setSyncLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString('ko-KR'),
+            level: 'error',
+            message: `✗ 티켓 조회 실패: ${result.error || '알 수 없는 오류'}`,
+          },
+        ]);
+        return;
+      }
+
+      const allTickets = result.data.issues;
+      setSyncLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString('ko-KR'),
+          level: 'success',
+          message: `✓ 총 ${allTickets.length}개 티켓 조회 완료`,
+        },
+      ]);
+
+      // 구 HMG URL이 있는 티켓 필터링
+      const oldHmgTickets = allTickets.filter((ticket) => {
+        const link = ticket.fields[IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK] as
+          | string
+          | undefined;
+        return link && link.includes(JIRA_ENDPOINTS.HMG_OLD);
+      });
+
+      setSyncLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString('ko-KR'),
+          level: 'info',
+          message: `→ 구 HMG 링크 티켓: ${oldHmgTickets.length}개 발견`,
+        },
+      ]);
+
+      if (oldHmgTickets.length === 0) {
+        setSyncLogs((prev) => [
+          ...prev,
+          {
+            timestamp: new Date().toLocaleTimeString('ko-KR'),
+            level: 'warning',
+            message: '⚠ 마이그레이션 대상 티켓이 없습니다',
+          },
+        ]);
+        toast.warning('마이그레이션 대상 티켓이 없습니다');
+        return;
+      }
+
+      setSyncLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString('ko-KR'),
+          level: 'info',
+          message: `━━━ 링크 마이그레이션 시작 (${oldHmgTickets.length}개) ━━━`,
+        },
+      ]);
+
+      // 각 티켓의 링크 업데이트
+      let successCount = 0;
+      let failCount = 0;
+
+      for (const ticket of oldHmgTickets) {
+        const oldLink = ticket.fields[IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK] as
+          | string
+          | undefined;
+        if (!oldLink) continue;
+
+        // 구 URL → 신 URL 변경
+        const newLink = oldLink.replace(
+          JIRA_ENDPOINTS.HMG_OLD,
+          JIRA_ENDPOINTS.HMG
+        );
+
+        try {
+          const updateResult = await jira.ignite.updateIssueFields(ticket.key, {
+            [IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK]: newLink,
+          });
+
+          if (updateResult.success) {
+            setSyncLogs((prev) => [
+              ...prev,
+              {
+                timestamp: new Date().toLocaleTimeString('ko-KR'),
+                level: 'success',
+                message: `✓ ${ticket.key}: ${oldLink} → ${newLink}`,
+              },
+            ]);
+            successCount++;
+          } else {
+            setSyncLogs((prev) => [
+              ...prev,
+              {
+                timestamp: new Date().toLocaleTimeString('ko-KR'),
+                level: 'error',
+                message: `✗ ${ticket.key}: 업데이트 실패 - ${updateResult.error}`,
+              },
+            ]);
+            failCount++;
+          }
+        } catch (error) {
+          setSyncLogs((prev) => [
+            ...prev,
+            {
+              timestamp: new Date().toLocaleTimeString('ko-KR'),
+              level: 'error',
+              message: `✗ ${ticket.key}: 오류 발생 - ${error instanceof Error ? error.message : String(error)}`,
+            },
+          ]);
+          failCount++;
+        }
+      }
+
+      // 최종 결과
+      setSyncLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString('ko-KR'),
+          level: 'success',
+          message: `━━━ 마이그레이션 완료: 성공 ${successCount}개, 실패 ${failCount}개 ━━━`,
+        },
+      ]);
+
+      if (failCount === 0) {
+        toast.success(
+          `링크 마이그레이션 완료! ${successCount}개 티켓 업데이트`
+        );
+      } else {
+        toast.warning(
+          `링크 마이그레이션 완료 (성공: ${successCount}, 실패: ${failCount})`
+        );
+      }
+    } catch (error) {
+      setSyncLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString('ko-KR'),
+          level: 'error',
+          message: `✗ 오류 발생: ${error instanceof Error ? error.message : String(error)}`,
+        },
+      ]);
+      toast.error('링크 마이그레이션 중 오류가 발생했습니다');
+    } finally {
+      setIsSyncing(false);
+    }
+  }; */
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <main className="h-screen bg-background flex flex-col">
+      {/* Header */}
+      <header className="border-b">
+        <div className="container mx-auto px-6 py-6 flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold">FE1 Jira 통합 관리</h1>
+            <p className="text-sm text-muted-foreground">
+              여러 Jira 인스턴스를 자동화하고 관리합니다
+            </p>
+          </div>
+          <Link href="/create-ticket">
+            <Button>
+              <Plus className="mr-2 h-4 w-4" />
+              티켓 생성
+            </Button>
+          </Link>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </header>
+
+      {/* Main Content: 2-Column Layout */}
+      <div className="flex-1 container mx-auto px-6 py-6 overflow-hidden">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 h-full">
+          {/* Left: Action Area */}
+          <Card className="flex h-full flex-col overflow-hidden">
+            <CardHeader>
+              <CardTitle>작업 영역</CardTitle>
+              <CardDescription>
+                자동화 작업을 설정하고 실행합니다
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1 space-y-6 overflow-y-auto pr-4">
+              {/* User Selection - 최상단 */}
+              <div className="space-y-2">
+                <label className="text-sm font-medium flex items-center gap-2">
+                  <User className="h-4 w-4" />
+                  담당자 선택
+                  <span className="text-red-500">*</span>
+                </label>
+                <Select value={selectedUser} onValueChange={handleUserChange}>
+                  <SelectTrigger
+                    ref={userSelectRef}
+                    className={
+                      userSelectError ? 'border-red-500 focus:ring-red-500' : ''
+                    }
+                  >
+                    <SelectValue placeholder="담당자를 선택하세요" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {JIRA_USER_LIST.map((user) => (
+                      <SelectItem key={user.igniteAccountId} value={user.name}>
+                        {user.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {userSelectError && (
+                  <p className="text-sm text-red-500">담당자를 선택해주세요.</p>
+                )}
+              </div>
+
+              {/* 구분선 */}
+              <div className="border-t pt-6">
+                <h3 className="text-sm font-semibold mb-4">자동화 작업</h3>
+
+                {/* Ticket Sync Action */}
+                <div className="space-y-3">
+                  <label className="text-sm font-medium">티켓 동기화</label>
+                  <div className="flex gap-2">
+                    <Select
+                      value={syncType}
+                      onValueChange={handleSyncTypeChange}
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="동기화 유형을 선택하세요" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="전체">전체</SelectItem>
+                        <SelectItem value="FEHG -> KQ">FEHG → KQ</SelectItem>
+                        <SelectItem value="FEHG -> HDD">FEHG → HDD</SelectItem>
+                        <SelectItem value="FEHG -> HB">FEHG → HB</SelectItem>
+                        <SelectItem value="FEHG -> AUTOWAY">
+                          FEHG → AUTOWAY
+                        </SelectItem>
+                        <SelectItem value="에픽 지정">에픽 지정</SelectItem>
+                        <SelectItem value="티켓 지정">티켓 지정</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      onClick={handleSync}
+                      disabled={isSyncing}
+                      className="min-w-[100px]"
+                    >
+                      <RefreshCw
+                        className={`mr-2 h-4 w-4 ${isSyncing ? 'animate-spin' : ''}`}
+                      />
+                      {isSyncing ? '동기화 중...' : '동기화'}
+                    </Button>
+                  </div>
+
+                  {/* 에픽/티켓 지정 시 추가 입력 필드 */}
+                  {isSpecificMode && (
+                    <div className="space-y-2 pl-4 border-l-2 border-muted">
+                      <label className="text-sm font-medium text-muted-foreground">
+                        {syncType === '에픽 지정'
+                          ? 'FEHG 에픽 번호'
+                          : 'FEHG 티켓 번호'}
+                      </label>
+                      <Input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder={`번호를 입력하세요 (예: 123 → FEHG-123)`}
+                        value={epicOrTicketId}
+                        onChange={handleIdInput}
+                        maxLength={10}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        숫자만 입력 (최대 10자) • FEHG-{epicOrTicketId || 'XXX'}{' '}
+                        형태로 조회
+                      </p>
+                    </div>
+                  )}
+
+                  {/* AUTOWAY 대상 확인 버튼 (필요시 사용) */}
+                  {/* <div className="pt-3 border-t space-y-2">
+                    <Button
+                      onClick={handleCheckAutowayTargets}
+                      disabled={isSyncing}
+                      variant="outline"
+                      className="w-full"
+                    >
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      AUTOWAY 동기화 대상 확인
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      담당자의 허용된 에픽 하위 티켓만 조회합니다
+                    </p>
+                  </div> */}
+
+                  {/* 구 HMG 링크 마이그레이션 버튼 (마이그레이션 완료로 숨김) */}
+                  {/* <div className="pt-3 border-t space-y-2">
+                    <Button
+                      onClick={handleMigrateOldHmgLinks}
+                      disabled={isSyncing}
+                      variant="outline"
+                      className="w-full"
+                    >
+                      <RefreshCw className="mr-2 h-4 w-4" />구 HMG 링크 → 신 HMG
+                      링크 변환
+                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      구 Jira 링크를 신 Jira 링크로 일괄 변경합니다
+                    </p>
+                  </div> */}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Right: Result Area */}
+          <Card className="flex h-full flex-col overflow-hidden">
+            <CardHeader>
+              <CardTitle>결과 영역</CardTitle>
+              <CardDescription>실시간 로그 및 실행 결과</CardDescription>
+            </CardHeader>
+            <CardContent className="flex-1 p-0 overflow-hidden">
+              <ScrollArea ref={resultScrollRef} className="h-full px-6 pb-6">
+                <div className="space-y-3 font-mono text-sm leading-relaxed">
+                  {syncLogs.length === 0 ? (
+                    <>
+                      <div className="text-muted-foreground">
+                        <span className="text-green-500">[00:00:00]</span>{' '}
+                        시스템 준비 완료...
+                      </div>
+                      <div className="text-muted-foreground">
+                        <span className="text-blue-500">[00:00:01]</span> 작업
+                        대기 중...
+                      </div>
+                      <div className="text-muted-foreground opacity-50">
+                        ─────────────────────────────────
+                      </div>
+                      <div className="text-muted-foreground italic">
+                        담당자를 선택하고 동기화 유형을 선택한 후
+                        &ldquo;동기화&rdquo; 버튼을 클릭하세요
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      {syncLogs.map((log, idx) => (
+                        <div
+                          key={idx}
+                          className={`${
+                            log.level === 'success'
+                              ? 'text-green-600'
+                              : log.level === 'error'
+                                ? 'text-red-600'
+                                : log.level === 'warning'
+                                  ? 'text-yellow-600'
+                                  : 'text-blue-600'
+                          }`}
+                        >
+                          <span className="text-muted-foreground">
+                            [{log.timestamp}]
+                          </span>{' '}
+                          <span className="whitespace-pre-wrap">
+                            {emphasizeLogMessage(log.message)}
+                          </span>
+                        </div>
+                      ))}
+
+                      {/* 동기화 완료 후 결과 링크 */}
+                      {syncSummary && syncSummary.results.length > 0 && (
+                        <>
+                          <div className="text-muted-foreground opacity-50 my-4">
+                            ━━━━━━━━━━━━━━━━━━━━━━━━
+                          </div>
+                          <div className="font-semibold text-foreground mb-2">
+                            📊 동기화 결과
+                          </div>
+                          {/* 통계 요약 */}
+                          <div className="mb-4 p-4 bg-muted/30 rounded-lg border border-muted space-y-2 font-sans text-sm">
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                필드 동기화
+                              </span>
+                              <span className="font-bold text-base">
+                                {syncSummary.totalUpdated}개
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                신규 생성
+                              </span>
+                              <span className="font-bold text-base text-green-600">
+                                {syncSummary.totalCreated}개
+                              </span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="text-muted-foreground">
+                                동기화 실패
+                              </span>
+                              <span className="font-bold text-base text-red-600">
+                                {syncSummary.totalFailed}개
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-sm text-muted-foreground mb-2 font-semibold">
+                            상세 결과
+                          </div>
+                          <div className="space-y-1">
+                            {syncSummary.results.map((result, idx) => (
+                              <div
+                                key={idx}
+                                className="flex items-center gap-2"
+                              >
+                                <span
+                                  className={
+                                    result.success
+                                      ? 'text-green-600'
+                                      : 'text-red-600'
+                                  }
+                                >
+                                  {result.success ? '✓' : '✗'}
+                                </span>
+                                <a
+                                  href={`${JIRA_ENDPOINTS.IGNITE}/browse/${result.fehgKey}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-blue-600 hover:underline inline-flex items-center gap-1"
+                                >
+                                  {result.fehgKey}
+                                  <ExternalLink className="h-3 w-3" />
+                                </a>
+                                <span className="text-muted-foreground">→</span>
+                                {result.targetKey ? (
+                                  <>
+                                    <a
+                                      href={`${
+                                        result.targetProject === 'AUTOWAY'
+                                          ? JIRA_ENDPOINTS.HMG
+                                          : JIRA_ENDPOINTS.IGNITE
+                                      }/browse/${result.targetKey}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:underline inline-flex items-center gap-1"
+                                    >
+                                      {result.targetKey}
+                                      <ExternalLink className="h-3 w-3" />
+                                    </a>
+                                    {result.isNewlyCreated && (
+                                      <span className="text-xs font-semibold text-green-600 bg-green-50 px-2 py-0.5 rounded">
+                                        신규
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="text-red-600">
+                                    생성 실패
+                                  </span>
+                                )}
+                                {result.error && (
+                                  <span className="text-xs text-red-500">
+                                    ({result.error})
+                                  </span>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )}
+                    </>
+                  )}
+                </div>
+              </ScrollArea>
+            </CardContent>
+          </Card>
         </div>
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }
