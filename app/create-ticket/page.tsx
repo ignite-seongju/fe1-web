@@ -18,7 +18,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ArrowLeft, Plus, ExternalLink } from 'lucide-react';
+import { ArrowLeft, Plus, ExternalLink, Copy } from 'lucide-react';
 import { toast } from 'sonner';
 import { JIRA_USER_LIST, JIRA_ENDPOINTS } from '@/lib/constants/jira';
 import { jira } from '@/lib/services/jira';
@@ -176,6 +176,20 @@ export default function CreateTicketPage() {
 
   // 에픽이 선택되었는지 확인
   const isEpicSelected = !!selectedEpic;
+
+  // 티켓 링크 복사
+  const handleCopyTicketLink = async () => {
+    if (!createdTicketKey) return;
+
+    const ticketUrl = `${JIRA_ENDPOINTS.IGNITE}/browse/${createdTicketKey}`;
+
+    try {
+      await navigator.clipboard.writeText(ticketUrl);
+      toast.success('티켓 링크가 클립보드에 복사되었습니다!');
+    } catch {
+      toast.error('복사에 실패했습니다.');
+    }
+  };
 
   return (
     <main className="min-h-screen bg-background">
@@ -347,19 +361,30 @@ export default function CreateTicketPage() {
                 {/* 생성 결과 */}
                 {createdTicketKey && (
                   <div className="pt-4 border-t">
-                    <div className="p-4 bg-green-50 border border-green-200 rounded-lg">
-                      <p className="text-sm font-semibold text-green-900 mb-2">
+                    <div className="p-4 bg-green-50 border border-green-200 rounded-lg space-y-3">
+                      <p className="text-sm font-semibold text-green-900">
                         ✓ 티켓 생성 완료!
                       </p>
-                      <a
-                        href={`${JIRA_ENDPOINTS.IGNITE}/browse/${createdTicketKey}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-blue-600 hover:underline inline-flex items-center gap-1 font-medium"
-                      >
-                        {createdTicketKey} 티켓으로 이동
-                        <ExternalLink className="h-4 w-4" />
-                      </a>
+                      <div className="flex flex-col gap-2">
+                        <a
+                          href={`${JIRA_ENDPOINTS.IGNITE}/browse/${createdTicketKey}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:underline inline-flex items-center gap-1 font-medium"
+                        >
+                          {createdTicketKey} 티켓으로 이동
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                        <Button
+                          onClick={handleCopyTicketLink}
+                          variant="outline"
+                          size="sm"
+                          className="w-fit"
+                        >
+                          <Copy className="mr-2 h-3 w-3" />
+                          티켓 링크 복사하기
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
