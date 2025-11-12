@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev --webpack -p 7591",
+    "dev": "concurrently \"next dev --webpack -p 7591\" \"wait-on http://localhost:7591 && open-cli http://localhost:7591\"",
     "dev:network": "next dev --webpack -H 0.0.0.0 -p 7591",
     "build": "next build --webpack",
     "start": "next start -p 7591",
@@ -32,15 +32,18 @@
     "autoprefixer": "^10.4.22",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "concurrently": "^9.2.1",
     "eslint": "^9",
     "eslint-config-next": "16.0.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-prettier": "^5.5.4",
     "lucide-react": "^0.553.0",
+    "open-cli": "^8.0.0",
     "postcss": "^8.5.6",
     "prettier": "^3.6.2",
     "tailwind-merge": "^3.4.0",
     "tailwindcss": "^3.4.18",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wait-on": "^9.0.3"
   }
 }
