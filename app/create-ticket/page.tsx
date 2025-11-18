@@ -244,11 +244,22 @@ export default function CreateTicketPage() {
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {fehgEpics.map((epic) => (
-                    <SelectItem key={epic.id} value={epic.key}>
-                      {epic.key} - {epic.fields.summary}
-                    </SelectItem>
-                  ))}
+                  {fehgEpics
+                    .slice()
+                    .sort((a, b) => {
+                      // 1. 제목 기준 오름차순
+                      const summaryCompare = a.fields.summary.localeCompare(
+                        b.fields.summary
+                      );
+                      if (summaryCompare !== 0) return summaryCompare;
+                      // 2. 티켓 번호 기준 오름차순
+                      return a.key.localeCompare(b.key);
+                    })
+                    .map((epic) => (
+                      <SelectItem key={epic.id} value={epic.key}>
+                        {epic.key} - {epic.fields.summary}
+                      </SelectItem>
+                    ))}
                 </SelectContent>
               </Select>
               {fehgEpics.length === 0 && !isLoadingEpics && (
