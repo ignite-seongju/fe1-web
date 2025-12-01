@@ -281,6 +281,7 @@ export const ALLOWED_FEHG_TO_HMG_EPIC_IDS = [
   1635, // [GW] [오픈 신규 스펙] BO : 인원수 호출 UX 개선
   1640, // [GW] [오픈 신규 스펙] 메일 알림 뱃지 숫자 정책 개선
   1748, // [GW] [오픈 신규 스펙] 중복 로그인
+  2171,
 ] as const;
 
 // FEHG → AUTOWAY 동기화 허용 에픽 상세 정보
