@@ -51,9 +51,10 @@ export interface SprintInfo {
 
 // 동기화 옵션
 export interface SyncOptions {
-  assigneeAccountId: string; // 담당자 Ignite accountId
+  assigneeAccountId?: string; // 담당자 Ignite accountId (에픽 단위 동기화 시 생략 가능)
   targetProjects?: SyncTargetProject[]; // 대상 프로젝트 (없으면 전체)
   epicId?: string; // 에픽 지정 모드
   ticketId?: string; // 티켓 지정 모드
+  syncAllInEpic?: boolean; // 에픽 단위 동기화 (담당자 무관하게 에픽 하위 전체 동기화)
   chunkSize?: number; // 청크 크기 (기본: 15)
 }

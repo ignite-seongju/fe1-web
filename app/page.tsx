@@ -28,8 +28,8 @@ import {
   // ALLOWED_FEHG_TO_HMG_EPIC_IDS, // handleCheckAutowayTargets에서 사용 (현재 주석 처리됨)
   // IGNITE_CUSTOM_FIELDS, // handleMigrateOldHmgLinks에서 사용 (현재 주석 처리됨)
 } from '@/lib/constants/jira';
-// import { jira } from '@/lib/services/jira'; // handleCheckAutowayTargets에서 사용 (현재 주석 처리됨)
-// import { JiraIssue } from '@/lib/types/jira'; // 티켓 생성에서 사용 (현재 주석 처리됨)
+import { jira } from '@/lib/services/jira';
+import { JiraIssue } from '@/lib/types/jira';
 import {
   SyncOrchestrator,
   SyncLog,
@@ -78,6 +78,12 @@ export default function Home() {
   const [syncLogs, setSyncLogs] = useState<SyncLog[]>([]);
   const [syncSummary, setSyncSummary] = useState<SyncSummary | null>(null);
 
+  // 에픽 단위 동기화
+  const [fehgEpics, setFehgEpics] = useState<JiraIssue[]>([]);
+  const [isLoadingEpics, setIsLoadingEpics] = useState(false);
+  const [selectedEpicForSync, setSelectedEpicForSync] = useState<string>('');
+  const [isEpicSyncing, setIsEpicSyncing] = useState(false);
+
   const userSelectRef = useRef<HTMLButtonElement>(null);
   const resultScrollRef = useRef<HTMLDivElement | null>(null);
   const previousLogCountRef = useRef(0);
@@ -122,6 +128,25 @@ export default function Home() {
       })
     );
   }, [syncSummary]);
+
+  // FEHG 완료되지 않은 에픽 조회 (페이지 로드 시)
+  useEffect(() => {
+    const loadEpics = async () => {
+      setIsLoadingEpics(true);
+      try {
+        const result = await jira.ignite.getFEHGIncompleteEpics();
+        if (result.success && result.data) {
+          setFehgEpics(result.data.issues);
+        }
+      } catch {
+        // 에픽 로드 실패 시 조용히 처리
+      } finally {
+        setIsLoadingEpics(false);
+      }
+    };
+
+    loadEpics();
+  }, []);
 
   // 에픽/티켓 지정 모드인지 확인
   const isSpecificMode = syncType === '에픽 지정' || syncType === '티켓 지정';
@@ -231,6 +256,64 @@ export default function Home() {
       );
     } finally {
       setIsSyncing(false);
+    }
+  };
+
+  // 에픽 단위 동기화 (담당자 무관)
+  const handleEpicSync = async () => {
+    if (!selectedEpicForSync) {
+      toast.error('동기화할 에픽을 선택해주세요.');
+      return;
+    }
+
+    setIsEpicSyncing(true);
+    setSyncLogs([]);
+    setSyncSummary(null);
+
+    try {
+      // 에픽 번호 추출 (FEHG-123 → 123)
+      const epicIdMatch = selectedEpicForSync.match(/FEHG-(\d+)/);
+      if (!epicIdMatch) {
+        toast.error('올바르지 않은 에픽 형식입니다.');
+        return;
+      }
+
+      const epicId = epicIdMatch[1];
+      const epicInfo = fehgEpics.find((e) => e.key === selectedEpicForSync);
+
+      toast.info(
+        `${selectedEpicForSync} 에픽 단위 동기화를 시작합니다... (담당자 무관)`
+      );
+
+      // 동기화 실행 (syncAllInEpic: true로 담당자 무관 동기화)
+      const orchestrator = new SyncOrchestrator((log) => {
+        setSyncLogs((prev) => [...prev, log]);
+      });
+
+      const summary = await orchestrator.execute({
+        epicId,
+        syncAllInEpic: true, // 담당자 무관하게 에픽 하위 전체 동기화
+        chunkSize: 15,
+      });
+
+      setSyncSummary(summary);
+
+      // 결과 토스트
+      if (summary.totalFailed === 0) {
+        toast.success(
+          `에픽 동기화 완료! 총 ${summary.totalSuccess}개 티켓 처리 (${epicInfo?.fields.summary || selectedEpicForSync})`
+        );
+      } else {
+        toast.warning(
+          `에픽 동기화 완료 (성공: ${summary.totalSuccess}, 실패: ${summary.totalFailed})`
+        );
+      }
+    } catch (error) {
+      toast.error(
+        `에픽 동기화 실패: ${error instanceof Error ? error.message : String(error)}`
+      );
+    } finally {
+      setIsEpicSyncing(false);
     }
   };
 
@@ -583,6 +666,61 @@ export default function Home() {
                       담당자의 허용된 에픽 하위 티켓만 조회합니다
                     </p>
                   </div> */}
+                </div>
+
+                {/* 에픽 단위 동기화 */}
+                <div className="pt-6 border-t space-y-3">
+                  <label className="text-sm font-medium">
+                    에픽 단위 동기화
+                  </label>
+                  <p className="text-xs text-muted-foreground -mt-1">
+                    담당자와 관계없이 선택한 에픽의 모든 하위 티켓을
+                    동기화합니다
+                  </p>
+                  <div className="flex gap-2">
+                    <Select
+                      value={selectedEpicForSync}
+                      onValueChange={setSelectedEpicForSync}
+                      disabled={isLoadingEpics || isEpicSyncing}
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue
+                          placeholder={
+                            isLoadingEpics
+                              ? '에픽 목록 로딩 중...'
+                              : '에픽을 선택하세요'
+                          }
+                        />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {fehgEpics
+                          .slice()
+                          .sort((a, b) => {
+                            const summaryCompare =
+                              a.fields.summary.localeCompare(b.fields.summary);
+                            if (summaryCompare !== 0) return summaryCompare;
+                            return a.key.localeCompare(b.key);
+                          })
+                          .map((epic) => (
+                            <SelectItem key={epic.id} value={epic.key}>
+                              {epic.key} - {epic.fields.summary}
+                            </SelectItem>
+                          ))}
+                      </SelectContent>
+                    </Select>
+                    <Button
+                      onClick={handleEpicSync}
+                      disabled={
+                        isEpicSyncing || isSyncing || !selectedEpicForSync
+                      }
+                      className="min-w-[100px]"
+                    >
+                      <RefreshCw
+                        className={`mr-2 h-4 w-4 ${isEpicSyncing ? 'animate-spin' : ''}`}
+                      />
+                      {isEpicSyncing ? '동기화 중...' : '동기화'}
+                    </Button>
+                  </div>
 
                   {/* 구 HMG 링크 마이그레이션 버튼 (마이그레이션 완료로 숨김) */}
                   {/* <div className="pt-3 border-t space-y-2">

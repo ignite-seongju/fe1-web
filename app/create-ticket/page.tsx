@@ -49,6 +49,7 @@ export default function CreateTicketPage() {
   const [estimatedTimeError, setEstimatedTimeError] = useState<string>('');
   const [startDate, setStartDate] = useState<string>('');
   const [endDate, setEndDate] = useState<string>('');
+  const [relatedLink, setRelatedLink] = useState<string>('');
 
   // 생성 상태
   const [isCreating, setIsCreating] = useState(false);
@@ -154,6 +155,23 @@ export default function CreateTicketPage() {
           originalEstimate: estimatedTime.trim(),
         };
       }
+      if (relatedLink.trim()) {
+        fields.description = {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `관련 업무: ${relatedLink.trim()}`,
+                },
+              ],
+            },
+          ],
+        };
+      }
 
       const payload = { fields };
 
@@ -180,6 +198,7 @@ export default function CreateTicketPage() {
         setEstimatedTime('');
         setStartDate('');
         setEndDate('');
+        setRelatedLink('');
       } else {
         toast.error(result.error || '티켓 생성에 실패했습니다.');
       }
@@ -419,6 +438,21 @@ export default function CreateTicketPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+
+                {/* 관련 업무 링크 */}
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">관련 업무 링크</label>
+                  <Input
+                    type="url"
+                    placeholder="슬랙 또는 두레이 링크 (선택사항)"
+                    value={relatedLink}
+                    onChange={(e) => setRelatedLink(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    업무 요청이 온 슬랙/두레이 링크를 입력하면 티켓 설명에
+                    자동으로 추가됩니다
+                  </p>
                 </div>
 
                 {/* 최초추정치 */}

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 import {
@@ -10,98 +10,143 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card';
-import { Copy, Check, Home, Plus, Network } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Copy, Check, Home, Plus, Network, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 
+import type { DeployFormData, ProjectType, DeployType } from './types';
+import {
+  PROJECT_OPTIONS,
+  DEPLOY_TYPE_OPTIONS,
+  DEPLOY_TYPE_DISPLAY,
+  MR_FIELDS_BY_PROJECT,
+  INITIAL_FORM_DATA,
+} from './constants';
+
 export default function TemplatesPage() {
-  const [copiedCpo, setCopiedCpo] = useState(false);
-  const [copiedSofteer, setCopiedSofteer] = useState(false);
+  // 폼 데이터 상태
+  const [formData, setFormData] = useState<DeployFormData>(INITIAL_FORM_DATA);
 
-  // CPO BO 템플릿
-  const cpoTemplate = `🚀 CPO BO 정기배포/핫픽스 체크리스트
+  // Select 리셋을 위한 키 (초기화 시 Select 컴포넌트 리마운트용)
+  const [resetKey, setResetKey] = useState(0);
 
-< Gitlab >
-1. 배포 승인 대기
-2. release -> main 머지
-   • BO: https://gitlab.hmc.co.kr/kia-cpo/kia-cpo-bo-web/-/merge_requests
-   • 프라이싱: https://gitlab.hmc.co.kr/kia-cpo/kia-pricing-bo-web/-/merge_requests
-   • 평가사: https://gitlab.hmc.co.kr/kia-cpo/kia-cpo-partner-web/-/merge_requests
-   - 담당 PR건들 release 브랜치로 머지 - @cpo-fe 완료시 따봉
-   - 릴리즈 발행 (release-yyyyMMdd) - @김가빈
-   - 릴리즈 노트: {릴리즈 노트 링크 입력}
-3. main 로컬구동 모니터링 - @cpo-fe
-4. 배포 전 할 일 확인 - @cpo-fe
-5. 운영 배포 trigger - @김가빈
-6. main -> stage, stage2 현행화/배포
-   a. BO {담당자 태그}
-   b. 프라이싱 {담당자 태그}
-   c. 평가사 {담당자 태그}
-7. 배포 후 모니터링 - @cpo-fe
-8. 배포 후 할 일 확인 - @cpo-fe
-9. 운영 모니터링 - {모니터링 순서 작성}
-10. 배포 완료
+  // 결과물 상태
+  const [generatedTemplate, setGeneratedTemplate] = useState<string>('');
+  const [copied, setCopied] = useState(false);
 
-📚 참고 링크:
-• CPO 배포 관리: https://ignitecorp.atlassian.net/wiki/spaces/CPO/pages/362676616
-• Gitlab 그룹: https://gitlab.hmc.co.kr/kia-cpo
-`;
+  // CPO 추가 메시지 복사 상태
+  const [copiedMessages, setCopiedMessages] = useState<Record<string, boolean>>(
+    {}
+  );
 
-  // 소프티어 템플릿
-  const softeerTemplate = `🚀 소프티어 정기배포/핫픽스 체크리스트
+  // 프로젝트 선택 핸들러
+  const handleProjectChange = useCallback((value: string) => {
+    setFormData({
+      ...INITIAL_FORM_DATA,
+      project: value as ProjectType,
+    });
+    setGeneratedTemplate('');
+  }, []);
 
-< 소프티어 배포 >
-1. 팀즈 배포 승인 대기
-2. release/hotfix -> main 머지
-   • Gitlab MR: https://gitlab.hmc.co.kr/ignite-hmg-developers/hmg-developers/-/merge_requests
-3. main 로컬구동 모니터링 - @hmg-developers
-4. 배포 전 할 일 확인 - @hmg-developers
-   • Dev 배포관리: https://ignitecorp.atlassian.net/wiki/spaces/HDS/pages/839024722/Dev
-5. main 검증계 배포 (staging 태그 발행)
-6. 검증계 배포 완료 대기
-   • Gitlab Pipeline: https://gitlab.hmc.co.kr/ignite-hmg-developers/hmg-developers/-/pipelines
-   • Argo: https://argo.hmc.co.kr/
-7. main 운영계 배포 (release 태그 발행)
-8. 배포 후 모니터링 - @hmg-developers
-9. 배포 후 할 일 확인
-   • Dev 배포관리: https://ignitecorp.atlassian.net/wiki/spaces/HDS/pages/839024722/Dev
-10. 팀즈 배포 완료 공유
+  // 배포 종류 선택 핸들러
+  const handleDeployTypeChange = useCallback((value: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      deployType: value as DeployType,
+      deployDocLink: '',
+      mrLinks: {},
+    }));
+    setGeneratedTemplate('');
+  }, []);
 
-📚 참고 링크:
-• HMG Developers: https://ignitecorp.atlassian.net/wiki/spaces/HDS/overview
-• Gitlab: https://gitlab.hmc.co.kr/ignite-hmg-developers/hmg-developers
-`;
+  // 배포대장 링크 변경 핸들러
+  const handleDeployDocLinkChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setFormData((prev) => ({
+        ...prev,
+        deployDocLink: e.target.value,
+      }));
+    },
+    []
+  );
 
-  // CPO 복사
-  const handleCopyCpo = async () => {
+  // MR 링크 변경 핸들러
+  const handleMRLinkChange = useCallback((fieldId: string, value: string) => {
+    setFormData((prev) => ({
+      ...prev,
+      mrLinks: {
+        ...prev.mrLinks,
+        [fieldId]: value,
+      },
+    }));
+  }, []);
+
+  // 템플릿 생성 핸들러
+  const handleGenerate = useCallback(() => {
+    // TODO: 실제 템플릿 생성 로직은 추후 추가 예정
+    const template = generateTemplate(formData);
+    setGeneratedTemplate(template);
+    toast.success('템플릿이 생성되었습니다!');
+  }, [formData]);
+
+  // 복사 핸들러
+  const handleCopy = useCallback(async () => {
     try {
-      await navigator.clipboard.writeText(cpoTemplate);
-      setCopiedCpo(true);
-      toast.success('CPO BO 템플릿이 복사되었습니다!', {
+      await navigator.clipboard.writeText(generatedTemplate);
+      setCopied(true);
+      toast.success('템플릿이 복사되었습니다!', {
         description: 'Slack에 붙여넣으면 URL이 자동으로 링크로 변환됩니다.',
         duration: 3000,
       });
-
-      setTimeout(() => setCopiedCpo(false), 2000);
+      setTimeout(() => setCopied(false), 2000);
     } catch {
       toast.error('복사에 실패했습니다.');
     }
-  };
+  }, [generatedTemplate]);
 
-  // 소프티어 복사
-  const handleCopySofteer = async () => {
-    try {
-      await navigator.clipboard.writeText(softeerTemplate);
-      setCopiedSofteer(true);
-      toast.success('소프티어 템플릿이 복사되었습니다!', {
-        description: 'Slack에 붙여넣으면 URL이 자동으로 링크로 변환됩니다.',
-        duration: 3000,
-      });
+  // CPO 추가 메시지 복사 핸들러
+  const handleCopyMessage = useCallback(
+    async (messageId: string, content: string) => {
+      try {
+        await navigator.clipboard.writeText(content);
+        setCopiedMessages((prev) => ({ ...prev, [messageId]: true }));
+        toast.success('메시지가 복사되었습니다!');
+        setTimeout(() => {
+          setCopiedMessages((prev) => ({ ...prev, [messageId]: false }));
+        }, 2000);
+      } catch {
+        toast.error('복사에 실패했습니다.');
+      }
+    },
+    []
+  );
 
-      setTimeout(() => setCopiedSofteer(false), 2000);
-    } catch {
-      toast.error('복사에 실패했습니다.');
-    }
-  };
+  // 초기화 핸들러
+  const handleReset = useCallback(() => {
+    setFormData(INITIAL_FORM_DATA);
+    setGeneratedTemplate('');
+    setCopiedMessages({});
+    setResetKey((prev) => prev + 1); // Select 컴포넌트 리마운트
+  }, []);
+
+  // 현재 프로젝트의 MR 필드 설정 가져오기
+  const currentMRFields = formData.project
+    ? MR_FIELDS_BY_PROJECT[formData.project]
+    : [];
+
+  // 완료 버튼 활성화 조건
+  const isFormValid =
+    formData.project &&
+    formData.deployType &&
+    formData.deployDocLink.trim() !== '' &&
+    currentMRFields.every((field) => formData.mrLinks[field.id]?.trim() !== '');
 
   return (
     <main className="min-h-screen bg-background">
@@ -138,222 +183,338 @@ export default function TemplatesPage() {
       </header>
 
       {/* Main Content */}
-      <div className="container mx-auto px-6 py-8 max-w-6xl">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* CPO BO 템플릿 */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>CPO BO 정기배포/핫픽스</CardTitle>
-                  <CardDescription>
-                    Gitlab 배포 프로세스 체크리스트
-                  </CardDescription>
-                </div>
-                <Button
-                  onClick={handleCopyCpo}
-                  variant={copiedCpo ? 'outline' : 'default'}
-                  size="sm"
-                >
-                  {copiedCpo ? (
-                    <>
-                      <Check className="mr-2 h-4 w-4" />
-                      복사됨!
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="mr-2 h-4 w-4" />
-                      복사
-                    </>
-                  )}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* 미리보기 */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-2 block">
-                  템플릿 미리보기
-                </label>
-                <div className="p-4 bg-muted/50 rounded-lg border max-h-96 overflow-y-auto text-xs whitespace-pre-wrap space-y-1">
-                  {cpoTemplate.split('\n').map((line, idx) => {
-                    // URL 자동 링크 변환
-                    const urlRegex = /(https?:\/\/[^\s]+)/g;
-                    const parts = line.split(urlRegex);
-
-                    return (
-                      <div key={idx} className="leading-relaxed">
-                        {parts.map((part, partIdx) => {
-                          if (part.match(urlRegex)) {
-                            return (
-                              <a
-                                key={partIdx}
-                                href={part}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:underline font-medium"
-                              >
-                                {part.length > 50
-                                  ? `${part.substring(0, 50)}...`
-                                  : part}
-                              </a>
-                            );
-                          }
-                          return <span key={partIdx}>{part}</span>;
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* 소프티어 템플릿 */}
-          <Card>
-            <CardHeader>
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle>소프티어 정기배포/핫픽스</CardTitle>
-                  <CardDescription>
-                    HMG Developers 배포 프로세스
-                  </CardDescription>
-                </div>
-                <Button
-                  onClick={handleCopySofteer}
-                  variant={copiedSofteer ? 'outline' : 'default'}
-                  size="sm"
-                >
-                  {copiedSofteer ? (
-                    <>
-                      <Check className="mr-2 h-4 w-4" />
-                      복사됨!
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="mr-2 h-4 w-4" />
-                      복사
-                    </>
-                  )}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {/* 미리보기 */}
-              <div>
-                <label className="text-xs font-medium text-muted-foreground mb-2 block">
-                  템플릿 미리보기
-                </label>
-                <div className="p-4 bg-muted/50 rounded-lg border max-h-96 overflow-y-auto text-xs whitespace-pre-wrap space-y-1">
-                  {softeerTemplate.split('\n').map((line, idx) => {
-                    // URL 자동 링크 변환
-                    const urlRegex = /(https?:\/\/[^\s]+)/g;
-                    const parts = line.split(urlRegex);
-
-                    return (
-                      <div key={idx} className="leading-relaxed">
-                        {parts.map((part, partIdx) => {
-                          if (part.match(urlRegex)) {
-                            return (
-                              <a
-                                key={partIdx}
-                                href={part}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-blue-600 hover:underline font-medium"
-                              >
-                                {part.length > 50
-                                  ? `${part.substring(0, 50)}...`
-                                  : part}
-                              </a>
-                            );
-                          }
-                          return <span key={partIdx}>{part}</span>;
-                        })}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* 하단 안내 */}
-        <Card className="mt-6">
+      <div className="container mx-auto px-6 py-8 max-w-3xl">
+        <Card>
           <CardHeader>
-            <CardTitle className="text-lg">사용 방법</CardTitle>
+            <CardTitle className="flex items-center gap-2">
+              <FileText className="h-5 w-5" />
+              배포 템플릿 생성
+            </CardTitle>
+            <CardDescription>
+              프로젝트와 배포 정보를 입력하면 체크리스트 템플릿이 자동으로
+              생성됩니다
+            </CardDescription>
           </CardHeader>
+
           <CardContent className="space-y-6">
-            {/* 사용 방법 */}
-            <div>
-              <h3 className="text-sm font-semibold mb-3">📝 사용 방법</h3>
-              <ol className="text-sm text-muted-foreground space-y-2">
-                <li>
-                  1. 위 카드에서{' '}
-                  <span className="font-semibold text-foreground">
-                    &quot;복사&quot;
-                  </span>{' '}
-                  버튼 클릭
-                </li>
-                <li>2. Slack 채널로 이동</li>
-                <li>3. Ctrl+V (또는 Cmd+V)로 붙여넣기</li>
-                <li>
-                  4. Slack이 URL을 자동으로{' '}
-                  <span className="font-semibold text-foreground">
-                    클릭 가능한 파란색 링크
-                  </span>
-                  로 변환합니다
-                </li>
-                <li>
-                  5. 필요한 부분 (담당자 태그, 날짜, 릴리즈 노트 등)을 직접 수정
-                </li>
-                <li>6. Enter로 전송</li>
-              </ol>
+            {/* Step 1: 프로젝트 선택 */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium">
+                배포 대상 프로젝트를 선택하세요
+              </label>
+              <Select
+                key={`project-${resetKey}`}
+                value={formData.project ?? undefined}
+                onValueChange={handleProjectChange}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="프로젝트 선택" />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROJECT_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </div>
 
-            {/* 예시 */}
-            <div className="border-t pt-6">
-              <h3 className="text-sm font-semibold mb-3">
-                💡 Slack URL 자동 링크 변환 예시
-              </h3>
-              <div className="space-y-2 text-sm">
-                <div className="p-3 bg-blue-50 rounded border border-blue-200">
-                  <p className="font-mono text-xs text-muted-foreground mb-2">
-                    복사되는 내용:
-                  </p>
-                  <code className="text-xs block">
-                    BO:
-                    https://gitlab.hmc.co.kr/kia-cpo/kia-cpo-bo-web/-/merge_requests
-                  </code>
+            {/* Step 2: 배포 종류 선택 (프로젝트 선택 후 노출) */}
+            {formData.project && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+                <label className="text-sm font-medium">
+                  배포 종류를 선택해주세요
+                </label>
+                <Select
+                  key={`deploy-type-${formData.project}-${resetKey}`}
+                  value={formData.deployType ?? undefined}
+                  onValueChange={handleDeployTypeChange}
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="배포 종류 선택" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DEPLOY_TYPE_OPTIONS.map((option) => (
+                      <SelectItem key={option.value} value={option.value}>
+                        {option.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
+
+            {/* Step 3: 배포대장 링크 입력 (배포 종류 선택 후 노출) */}
+            {formData.deployType && (
+              <div className="space-y-2 animate-in fade-in slide-in-from-top-2 duration-300">
+                <label className="text-sm font-medium">
+                  배포대장 링크를 입력해주세요
+                </label>
+                <Input
+                  type="url"
+                  placeholder="https://hmg.atlassian.net/wiki/..."
+                  value={formData.deployDocLink}
+                  onChange={handleDeployDocLinkChange}
+                />
+              </div>
+            )}
+
+            {/* Step 4: MR 링크 입력 (배포 종류 선택 후 노출) */}
+            {formData.deployType && (
+              <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                <label className="text-sm font-medium">
+                  MR 링크를 입력해주세요
+                </label>
+                <div className="space-y-3">
+                  {currentMRFields.map((field) => (
+                    <div key={field.id} className="space-y-1">
+                      <label className="text-xs text-muted-foreground">
+                        {field.label}
+                      </label>
+                      <Input
+                        type="url"
+                        placeholder={field.placeholder}
+                        value={formData.mrLinks[field.id] ?? ''}
+                        onChange={(e) =>
+                          handleMRLinkChange(field.id, e.target.value)
+                        }
+                      />
+                    </div>
+                  ))}
                 </div>
-                <div className="flex items-center justify-center text-muted-foreground">
-                  ↓ Slack에 붙여넣으면
-                </div>
-                <div className="p-3 bg-green-50 rounded border border-green-200">
-                  <p className="font-mono text-xs text-muted-foreground mb-2">
-                    Slack이 자동으로 링크 감지:
-                  </p>
-                  <div className="flex flex-col gap-1">
-                    <span className="text-xs">BO:</span>
-                    <a
-                      href="https://gitlab.hmc.co.kr/kia-cpo/kia-cpo-bo-web/-/merge_requests"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline font-medium text-xs break-all"
+              </div>
+            )}
+
+            {/* Step 5: 완료 버튼 (배포 종류 선택 후 노출) */}
+            {formData.deployType && (
+              <div className="flex gap-2 pt-4 animate-in fade-in slide-in-from-top-2 duration-300">
+                <Button
+                  onClick={handleGenerate}
+                  disabled={!isFormValid}
+                  className="flex-1"
+                >
+                  완료
+                </Button>
+                <Button variant="outline" onClick={handleReset}>
+                  초기화
+                </Button>
+              </div>
+            )}
+
+            {/* Step 6: 결과물 표시 */}
+            {generatedTemplate && (
+              <div className="space-y-4 pt-4 border-t animate-in fade-in slide-in-from-top-2 duration-300">
+                {/* 메인 템플릿 */}
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-medium">생성된 템플릿</label>
+                    <Button
+                      onClick={handleCopy}
+                      variant={copied ? 'outline' : 'default'}
+                      size="sm"
                     >
-                      gitlab.hmc.co.kr/kia-cpo/kia-cpo-bo-web/-/merge_requests
-                    </a>
+                      {copied ? (
+                        <>
+                          <Check className="mr-2 h-4 w-4" />
+                          복사됨!
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="mr-2 h-4 w-4" />
+                          복사
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                  <div className="p-4 bg-muted/50 rounded-lg border max-h-96 overflow-y-auto">
+                    <TemplatePreview content={generatedTemplate} />
                   </div>
                 </div>
+
+                {/* 추가 알림 메시지 */}
+                {formData.deployType && (
+                  <div className="space-y-3 pt-4 border-t">
+                    <label className="text-sm font-medium text-muted-foreground">
+                      배포 진행 중 사용할 알림 메시지
+                    </label>
+                    {getNotificationMessages(formData.deployType).map(
+                      (message) => (
+                        <div
+                          key={message.id}
+                          className="p-3 bg-muted/30 rounded-lg border"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-xs flex-1">{message.content}</p>
+                            <Button
+                              onClick={() =>
+                                handleCopyMessage(message.id, message.content)
+                              }
+                              variant={
+                                copiedMessages[message.id] ? 'outline' : 'ghost'
+                              }
+                              size="sm"
+                              className="shrink-0"
+                            >
+                              {copiedMessages[message.id] ? (
+                                <>
+                                  <Check className="mr-1 h-3 w-3" />
+                                  복사됨
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="mr-1 h-3 w-3" />
+                                  복사
+                                </>
+                              )}
+                            </Button>
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </div>
+                )}
               </div>
-              <p className="text-xs text-muted-foreground mt-3">
-                ✅ Slack은 URL을 자동으로 감지하여 클릭 가능한 링크로 표시합니다
-              </p>
-            </div>
+            )}
           </CardContent>
         </Card>
       </div>
     </main>
+  );
+}
+
+// 알림 메시지 생성 함수
+function getNotificationMessages(deployType: DeployType) {
+  const deployDisplay = DEPLOY_TYPE_DISPLAY[deployType];
+
+  return [
+    {
+      id: 'merge-request',
+      content: `각 담당자분들께서는 배포대장, 배포 전 할 일, 각 작업분 ${deployDisplay.branch} 머지 여부 확인 부탁드립니다. (완료시 따봉)`,
+    },
+    {
+      id: 'main-merge',
+      content:
+        'main 머지가 완료되었습니다. 각 담당자분들께서는 main 로컬 구동 테스트 부탁드립니다. (완료시 따봉)',
+    },
+    {
+      id: 'deploy-complete',
+      content:
+        '운영계 배포 완료되었습니다. 각 담당자분들께서는 운영계 모니터링 부탁드립니다. (완료시 따봉)',
+    },
+  ];
+}
+
+// 템플릿 생성 함수
+function generateTemplate(formData: DeployFormData): string {
+  if (!formData.project || !formData.deployType) return '';
+
+  const deployDisplay = DEPLOY_TYPE_DISPLAY[formData.deployType];
+
+  // 프로젝트별 템플릿 생성
+  switch (formData.project) {
+    case 'cpo':
+      return generateCPOTemplate(formData, deployDisplay);
+    case 'groupware':
+      return generateGroupwareTemplate(formData, deployDisplay);
+    case 'hmg-board':
+      return generateHMGBoardTemplate(formData, deployDisplay);
+    default:
+      return '';
+  }
+}
+
+// CPO 템플릿 생성
+function generateCPOTemplate(
+  formData: DeployFormData,
+  deployDisplay: { title: string; branch: string }
+): string {
+  const { deployDocLink, mrLinks } = formData;
+
+  return `🚀 CPO BO ${deployDisplay.title}
+1. 배포대장 및 배포 전 할 일 확인 (${deployDocLink})
+2. feature -> ${deployDisplay.branch} 머지 확인
+   • BO: ${mrLinks.bo ?? ''}
+   • 프라이싱: ${mrLinks.pricing ?? ''}
+   • 평가사: ${mrLinks.evaluator ?? ''}
+3. ${deployDisplay.branch} -> main 머지
+4. main 로컬 구동 모니터링
+5. 배포 태그 발행
+6. 배포 후 운영계 모니터링
+7. 배포 후 할 일 확인
+8. main -> stage, dev 현행화
+9. 배포 완료`;
+}
+
+// 그룹웨어 템플릿 생성
+function generateGroupwareTemplate(
+  formData: DeployFormData,
+  deployDisplay: { title: string; branch: string }
+): string {
+  const { deployDocLink, mrLinks } = formData;
+
+  return `🚀 그룹웨어 ${deployDisplay.title}
+1. 배포대장 및 배포 전 할 일 확인 (${deployDocLink})
+2. feature -> ${deployDisplay.branch} 머지 확인
+   • ${mrLinks.main ?? ''}
+3. ${deployDisplay.branch} -> main 머지
+4. main 로컬 구동 모니터링
+5. 배포 태그 발행
+6. 배포 후 운영계 모니터링
+7. 배포 후 할 일 확인
+8. main -> stage, dev 현행화
+9. 배포 완료`;
+}
+
+// HMG Board 템플릿 생성
+function generateHMGBoardTemplate(
+  formData: DeployFormData,
+  deployDisplay: { title: string; branch: string }
+): string {
+  const { deployDocLink, mrLinks } = formData;
+
+  return `🚀 HMG Board ${deployDisplay.title}
+1. 배포대장 및 배포 전 할 일 확인 (${deployDocLink})
+2. feature -> ${deployDisplay.branch} 머지 확인
+   • ${mrLinks.main ?? ''}
+3. ${deployDisplay.branch} -> main 머지
+4. main 로컬 구동 모니터링
+5. 배포 태그 발행
+6. 배포 후 운영계 모니터링
+7. 배포 후 할 일 확인
+8. main -> stage, dev 현행화
+9. 배포 완료`;
+}
+
+// 템플릿 미리보기 컴포넌트
+function TemplatePreview({ content }: { content: string }) {
+  return (
+    <div className="text-xs whitespace-pre-wrap space-y-1">
+      {content.split('\n').map((line, idx) => {
+        const urlRegex = /(https?:\/\/[^\s]+)/g;
+        const parts = line.split(urlRegex);
+
+        return (
+          <div key={idx} className="leading-relaxed">
+            {parts.map((part, partIdx) => {
+              if (part.match(urlRegex)) {
+                return (
+                  <a
+                    key={partIdx}
+                    href={part}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:underline font-medium"
+                  >
+                    {part.length > 60 ? `${part.substring(0, 60)}...` : part}
+                  </a>
+                );
+              }
+              return <span key={partIdx}>{part}</span>;
+            })}
+          </div>
+        );
+      })}
+    </div>
   );
 }

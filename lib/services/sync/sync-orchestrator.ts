@@ -128,7 +128,7 @@ export class SyncOrchestrator {
         const results = await this.syncToProject(
           projectTickets,
           targetProject,
-          options.assigneeAccountId,
+          options.assigneeAccountId || '',
           options.chunkSize || 15
         );
         allResults.push(...results);
@@ -147,7 +147,21 @@ export class SyncOrchestrator {
    * FEHG 티켓 조회
    */
   private async fetchFehgTickets(options: SyncOptions): Promise<JiraIssue[]> {
-    // 에픽 지정 모드
+    // 에픽 단위 동기화 모드 (담당자 무관)
+    if (options.epicId && options.syncAllInEpic) {
+      this.logger.info(
+        `FEHG-${options.epicId} 에픽 하위 전체 티켓 조회 중 (담당자 무관)...`
+      );
+      const jql = `"Epic Link" = FEHG-${options.epicId} ORDER BY updated DESC`;
+      const result = await jira.ignite.searchAllIssues(jql);
+      if (result.success && result.data) {
+        this.logger.info(`에픽 하위 전체 티켓: ${result.data.issues.length}개`);
+        return result.data.issues;
+      }
+      return [];
+    }
+
+    // 에픽 지정 모드 (특정 담당자)
     if (options.epicId) {
       this.logger.info(`FEHG-${options.epicId} 에픽 하위 티켓 조회 중...`);
       const jql = `"Epic Link" = FEHG-${options.epicId} AND assignee = "${options.assigneeAccountId}" ORDER BY updated DESC`;
