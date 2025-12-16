@@ -84,6 +84,47 @@ export default function Home() {
   const [selectedEpicForSync, setSelectedEpicForSync] = useState<string>('');
   const [isEpicSyncing, setIsEpicSyncing] = useState(false);
 
+  // 정적 분석(Black Duck) 조회
+  const [staticAnalysisProject, setStaticAnalysisProject] =
+    useState<string>('');
+  const [isStaticAnalysisRunning, setIsStaticAnalysisRunning] = useState(false);
+  type BlackDuckRiskCategories = {
+    LICENSE?: Record<string, number>;
+    VULNERABILITY?: Record<string, number>;
+  };
+
+  type BlackDuckUiResult = {
+    ok: boolean | null;
+    project: { id?: string | null; name?: string | null; url?: string | null };
+    version: { name?: string | null; url?: string | null } | null;
+    policy: { status?: string | null } | null;
+    riskProfile?: { raw?: { categories?: BlackDuckRiskCategories } } | null;
+  };
+
+  // 프로젝트별 정적 분석 결과(향후 sonarqube도 같이 담을 예정)
+  const [staticAnalysisResults, setStaticAnalysisResults] = useState<
+    Record<
+      string,
+      {
+        blackduck?: BlackDuckUiResult;
+        sonarqube?: {
+          ok: boolean;
+          projectKey: string;
+          baseUrl?: string;
+          projectUrl?: string;
+          qualityGateStatus: string;
+          conditions: Array<{
+            status?: string;
+            metricKey?: string;
+            actualValue?: string;
+            errorThreshold?: string;
+            comparator?: string;
+          }>;
+        };
+      }
+    >
+  >({});
+
   const userSelectRef = useRef<HTMLButtonElement>(null);
   const resultScrollRef = useRef<HTMLDivElement | null>(null);
   const previousLogCountRef = useRef(0);
@@ -172,6 +213,122 @@ export default function Home() {
     }
   };
 
+  const handleStaticAnalysisProjectChange = (value: string) => {
+    setStaticAnalysisProject(value);
+  };
+
+  const handleRunStaticAnalysis = async () => {
+    if (!staticAnalysisProject) {
+      toast.error('프로젝트를 선택해주세요.');
+      return;
+    }
+
+    const currentProjectKey = staticAnalysisProject;
+
+    // TODO: 프로젝트별 Black Duck projectId 매핑 확장
+    const projectIdByProject: Record<string, string | undefined> = {
+      groupware: '0c338bd6-47dd-4f2b-bb9a-64a7c0515ed7',
+      'hmg-board': '8cbaf4df-8cb3-418c-9f45-af68d3736811',
+      cpo: '026cf752-678f-4430-973e-32163f1785bc',
+    };
+
+    const projectId = projectIdByProject[currentProjectKey];
+    if (!projectId) {
+      toast.error('이 프로젝트는 아직 Black Duck 설정이 연결되지 않았습니다.');
+      return;
+    }
+
+    const sonarProjectKeyByProject: Record<string, string | undefined> = {
+      cpo: 'C1162_kia-cpo-bo-web',
+      groupware: 'D0754_hmg-groupware.fe',
+      'hmg-board': 'F2156-hmg-board-FE',
+    };
+    const sonarProjectKey = sonarProjectKeyByProject[currentProjectKey];
+
+    resetResultArea();
+    setIsStaticAnalysisRunning(true);
+
+    try {
+      const [bdRes, sonarRes] = await Promise.allSettled([
+        fetch(
+          `/api/blackduck/status?projectId=${encodeURIComponent(projectId)}&projectKey=${encodeURIComponent(
+            currentProjectKey
+          )}`,
+          { method: 'GET' }
+        ).then(async (r) => ({ ok: r.ok, json: await r.json() })),
+        sonarProjectKey
+          ? fetch(
+              `/api/sonarqube/status?projectKey=${encodeURIComponent(
+                sonarProjectKey
+              )}`,
+              { method: 'GET' }
+            ).then(async (r) => ({ ok: r.ok, json: await r.json() }))
+          : Promise.resolve({ ok: false, json: { success: false } }),
+      ]);
+
+      const blackduck =
+        bdRes.status === 'fulfilled' &&
+        bdRes.value.ok &&
+        bdRes.value.json?.success
+          ? (bdRes.value.json.data as BlackDuckUiResult)
+          : undefined;
+
+      const sonarqube =
+        sonarRes.status === 'fulfilled' &&
+        sonarRes.value.ok &&
+        sonarRes.value.json?.success
+          ? (sonarRes.value.json.data as {
+              ok: boolean;
+              projectKey: string;
+              baseUrl?: string;
+              projectUrl?: string;
+              qualityGateStatus: string;
+              conditions: Array<{
+                status?: string;
+                metricKey?: string;
+                actualValue?: string;
+                errorThreshold?: string;
+                comparator?: string;
+              }>;
+            })
+          : undefined;
+
+      if (!blackduck && !sonarqube) {
+        const bdErr =
+          bdRes.status === 'fulfilled' ? bdRes.value.json?.error : null;
+        const sonarErr =
+          sonarRes.status === 'fulfilled' ? sonarRes.value.json?.error : null;
+        throw new Error(bdErr || sonarErr || '정적 분석 조회에 실패했습니다.');
+      }
+
+      setStaticAnalysisResults({
+        [currentProjectKey]: {
+          ...(blackduck ? { blackduck } : {}),
+          ...(sonarqube ? { sonarqube } : {}),
+        },
+      });
+      toast.success('정적 분석 상태를 확인했습니다.');
+    } catch (error) {
+      toast.error(
+        `정적 분석 조회 실패: ${error instanceof Error ? error.message : String(error)}`
+      );
+      setStaticAnalysisResults({});
+    } finally {
+      setIsStaticAnalysisRunning(false);
+    }
+  };
+
+  const isTicketSyncReady =
+    !!selectedUser && (!isSpecificMode || epicOrTicketId.trim() !== '');
+  const isStaticAnalysisReady = staticAnalysisProject.trim() !== '';
+
+  const resetResultArea = () => {
+    // 어떤 작업이든 새로 시작하면 결과 영역은 초기화하고 새 결과만 노출
+    setSyncLogs([]);
+    setSyncSummary(null);
+    setStaticAnalysisResults({});
+  };
+
   const handleSync = async () => {
     // 사용자 선택 검증
     if (!selectedUser) {
@@ -198,9 +355,8 @@ export default function Home() {
     }
 
     setUserSelectError(false);
+    resetResultArea();
     setIsSyncing(true);
-    setSyncLogs([]);
-    setSyncSummary(null);
 
     try {
       // 사용자 정보 가져오기
@@ -266,9 +422,8 @@ export default function Home() {
       return;
     }
 
+    resetResultArea();
     setIsEpicSyncing(true);
-    setSyncLogs([]);
-    setSyncSummary(null);
 
     try {
       // 에픽 번호 추출 (FEHG-123 → 123)
@@ -589,7 +744,7 @@ export default function Home() {
                 )}
               </div>
 
-              {/* 구분선 */}
+              {/* 자동화 작업 */}
               <div className="border-t pt-6">
                 <h3 className="text-sm font-semibold mb-4">자동화 작업</h3>
 
@@ -618,7 +773,7 @@ export default function Home() {
                     </Select>
                     <Button
                       onClick={handleSync}
-                      disabled={isSyncing}
+                      disabled={!isTicketSyncReady || isSyncing}
                       className="min-w-[100px]"
                     >
                       <RefreshCw
@@ -630,7 +785,7 @@ export default function Home() {
 
                   {/* 에픽/티켓 지정 시 추가 입력 필드 */}
                   {isSpecificMode && (
-                    <div className="space-y-2 pl-4 border-l-2 border-muted">
+                    <div className="space-y-2 pl-4 pb-3 border-l-2 border-muted">
                       <label className="text-sm font-medium text-muted-foreground">
                         {syncType === '에픽 지정'
                           ? 'FEHG 에픽 번호'
@@ -739,6 +894,52 @@ export default function Home() {
                   </div> */}
                 </div>
               </div>
+
+              {/* 정적 분석 */}
+              <div className="border-t pt-6">
+                <h3 className="text-sm font-semibold mb-4">정적 분석</h3>
+
+                <div className="space-y-3">
+                  <label className="text-sm font-medium">
+                    Black Duck / SonarQube
+                  </label>
+                  <p className="text-xs text-muted-foreground -mt-1">
+                    선택한 프로젝트의 정적 분석 결과를 한 번에 확인합니다
+                  </p>
+
+                  <div className="flex gap-2">
+                    <Select
+                      value={staticAnalysisProject}
+                      onValueChange={handleStaticAnalysisProjectChange}
+                      disabled={isStaticAnalysisRunning}
+                    >
+                      <SelectTrigger className="flex-1">
+                        <SelectValue placeholder="프로젝트 선택" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="groupware">groupware</SelectItem>
+                        <SelectItem value="hmg-board">
+                          hmg-board (HB)
+                        </SelectItem>
+                        <SelectItem value="cpo">cpo</SelectItem>
+                      </SelectContent>
+                    </Select>
+
+                    <Button
+                      onClick={handleRunStaticAnalysis}
+                      disabled={
+                        !isStaticAnalysisReady || isStaticAnalysisRunning
+                      }
+                      className="min-w-[100px]"
+                    >
+                      <RefreshCw
+                        className={`mr-2 h-4 w-4 ${isStaticAnalysisRunning ? 'animate-spin' : ''}`}
+                      />
+                      {isStaticAnalysisRunning ? '실행 중...' : '실행'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -751,7 +952,227 @@ export default function Home() {
             <CardContent className="flex-1 p-0 overflow-hidden">
               <ScrollArea ref={resultScrollRef} className="h-full px-6 pb-6">
                 <div className="space-y-3 font-mono text-sm leading-relaxed">
-                  {syncLogs.length === 0 ? (
+                  {/* 정적 분석 결과 (Black Duck) */}
+                  {Object.keys(staticAnalysisResults).length > 0 && (
+                    <>
+                      <div className="text-muted-foreground opacity-50">
+                        ─────────────────────────────────
+                      </div>
+                      <div className="font-semibold text-foreground">
+                        🔎 정적 분석 결과
+                      </div>
+
+                      <div className="space-y-3 font-sans">
+                        {Object.entries(staticAnalysisResults).map(
+                          ([projectKey, result]) => {
+                            const blackduck = result.blackduck;
+                            if (!blackduck) return null;
+
+                            const categories =
+                              blackduck.riskProfile?.raw?.categories ?? {};
+                            const license = categories.LICENSE ?? {};
+                            const vuln = categories.VULNERABILITY ?? {};
+
+                            const licenseCritical = license.CRITICAL ?? 0;
+                            const licenseHigh = license.HIGH ?? 0;
+                            const vulnCritical = vuln.CRITICAL ?? 0;
+                            const vulnHigh = vuln.HIGH ?? 0;
+
+                            const totalActionTargets =
+                              licenseCritical +
+                              licenseHigh +
+                              vulnCritical +
+                              vulnHigh;
+
+                            const badgeClass =
+                              totalActionTargets > 0
+                                ? 'text-red-700 bg-red-50 border-red-200'
+                                : 'text-green-700 bg-green-50 border-green-200';
+
+                            const highlightCount = (value: number) =>
+                              value > 0
+                                ? 'text-red-700 font-semibold'
+                                : 'text-muted-foreground';
+
+                            return (
+                              <div
+                                key={projectKey}
+                                className="p-4 bg-muted/30 rounded-lg border space-y-2"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="font-semibold">
+                                      Black Duck ·{' '}
+                                      {projectKey === 'hmg-board'
+                                        ? 'HB'
+                                        : projectKey}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {blackduck.project?.name ?? '-'} ·{' '}
+                                      {blackduck.version?.name ?? '-'}
+                                    </div>
+                                  </div>
+                                  <div
+                                    className={`text-xs font-semibold px-2 py-1 rounded border whitespace-nowrap ${badgeClass}`}
+                                  >
+                                    조치 대상 {totalActionTargets}
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                  <div className="text-sm">
+                                    <div className="font-medium">LICENSE</div>
+                                    <div className="text-xs text-muted-foreground">
+                                      <span
+                                        className={highlightCount(
+                                          licenseCritical
+                                        )}
+                                      >
+                                        CRITICAL {licenseCritical}
+                                      </span>
+                                      <span className="text-muted-foreground">
+                                        {' '}
+                                        ·{' '}
+                                      </span>
+                                      <span
+                                        className={highlightCount(licenseHigh)}
+                                      >
+                                        HIGH {licenseHigh}
+                                      </span>
+                                    </div>
+                                  </div>
+                                  <div className="text-sm">
+                                    <div className="font-medium">
+                                      VULNERABILITY
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      <span
+                                        className={highlightCount(vulnCritical)}
+                                      >
+                                        CRITICAL {vulnCritical}
+                                      </span>
+                                      <span className="text-muted-foreground">
+                                        {' '}
+                                        ·{' '}
+                                      </span>
+                                      <span
+                                        className={highlightCount(vulnHigh)}
+                                      >
+                                        HIGH {vulnHigh}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                {blackduck.project?.url && (
+                                  <div className="pt-1 flex justify-end">
+                                    <Button variant="outline" size="sm" asChild>
+                                      <a
+                                        href={blackduck.project.url}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                        조치하러 가기
+                                      </a>
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                        )}
+
+                        {Object.entries(staticAnalysisResults).map(
+                          ([projectKey, result]) => {
+                            const sonarqube = result.sonarqube;
+                            if (!sonarqube) return null;
+
+                            const failed = (sonarqube.conditions ?? []).filter(
+                              (c) => c.status && c.status !== 'OK'
+                            );
+
+                            return (
+                              <div
+                                key={`${projectKey}-sonarqube`}
+                                className="p-4 bg-muted/30 rounded-lg border space-y-2"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div>
+                                    <div className="font-semibold">
+                                      SonarQube ·{' '}
+                                      {projectKey === 'hmg-board'
+                                        ? 'HB'
+                                        : projectKey}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">
+                                      {sonarqube.projectKey}
+                                    </div>
+                                  </div>
+                                  <div
+                                    className={`text-xs font-semibold px-2 py-1 rounded border whitespace-nowrap ${
+                                      sonarqube.ok
+                                        ? 'text-green-700 bg-green-50 border-green-200'
+                                        : 'text-red-700 bg-red-50 border-red-200'
+                                    }`}
+                                  >
+                                    {sonarqube.qualityGateStatus}
+                                  </div>
+                                </div>
+
+                                {failed.length > 0 && (
+                                  <div className="text-xs text-muted-foreground space-y-1">
+                                    {failed.slice(0, 5).map((c, idx) => (
+                                      <div
+                                        key={idx}
+                                        className="flex items-center justify-between gap-3"
+                                      >
+                                        <span className="truncate">
+                                          {c.metricKey ?? 'metric'}:{' '}
+                                          {c.actualValue ?? '-'}
+                                        </span>
+                                        <span className="text-red-700 font-semibold">
+                                          {c.status}
+                                        </span>
+                                      </div>
+                                    ))}
+                                    {failed.length > 5 && (
+                                      <div>... (총 {failed.length}개)</div>
+                                    )}
+                                  </div>
+                                )}
+
+                                {(sonarqube.projectUrl ||
+                                  sonarqube.baseUrl) && (
+                                  <div className="pt-1 flex justify-end">
+                                    <Button variant="outline" size="sm" asChild>
+                                      <a
+                                        href={
+                                          sonarqube.projectUrl ||
+                                          sonarqube.baseUrl
+                                        }
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                      >
+                                        <ExternalLink className="h-3 w-3" />
+                                        조치하러 가기
+                                      </a>
+                                    </Button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                  {syncLogs.length === 0 &&
+                  Object.keys(staticAnalysisResults).length === 0 &&
+                  !isSyncing &&
+                  !isEpicSyncing &&
+                  !isStaticAnalysisRunning ? (
                     <>
                       <div className="text-muted-foreground">
                         <span className="text-green-500">[00:00:00]</span>{' '}

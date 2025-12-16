@@ -29,6 +29,15 @@ IGNITE_JIRA_API_TOKEN=your_ignite_api_token
 # HMG Jira 인증 정보 (VPN 필요)
 HMG_JIRA_EMAIL=your-email@hyundai-partners.com
 HMG_JIRA_API_TOKEN=your_hmg_api_token
+
+# Blackduck
+BLACKDUCK_BASE_URL=
+BLACKDUCK_HB_GROUPWARE_TOKEN=
+BLACKDUCK_CPO_TOKEN=
+
+# Sonarqube
+SONALQUBE_TOKEN=
+SONARQUBE_URL=
 ```
 
 > 💡 **API 토큰 발급**: Jira → 프로필 → 보안 → API 토큰 생성
