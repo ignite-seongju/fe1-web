@@ -282,7 +282,12 @@ export async function createDeploymentDocument(
     }
 
     // 2. 새 페이지 제목 생성
-    const newTitle = `Dev) 배포 관리 - ${deploymentType} ${date}`;
+    const deploymentTypeLabels: Record<DeploymentType, string> = {
+      adhoc: '비정기배포',
+      release: '정기배포',
+      hotfix: 'hotfix',
+    };
+    const newTitle = `Dev) 배포 관리 - ${date}(${deploymentTypeLabels[deploymentType]})`;
 
     // 3. 중복 페이지 확인
     const duplicate = await checkDuplicatePage(
