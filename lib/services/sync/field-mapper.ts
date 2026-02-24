@@ -114,19 +114,19 @@ export function mapFieldsForAutoway(
     ],
   };
 
-  // 종료일 매핑 (End Date, Gantt End Date)
+  // 종료일 매핑 (Gantt End Date)
   if (fehgFields.duedate) {
     fields.duedate = fehgFields.duedate;
-    fields[HMG_CUSTOM_FIELDS.END_DATE] = fehgFields.duedate; // End Date
     fields[HMG_CUSTOM_FIELDS.GANTT_END_DATE] = fehgFields.duedate; // Gantt End Date
   }
 
-  // 시작일 매핑 (Start Date, Gantt Start Date)
+  // 시작일 매핑 (Start Date x3, Gantt Start Date)
   if (fehgFields[IGNITE_CUSTOM_FIELDS.START_DATE]) {
     const startDate = fehgFields[IGNITE_CUSTOM_FIELDS.START_DATE];
-    fields[HMG_CUSTOM_FIELDS.START_DATE] = startDate; // Start Date
-    fields[HMG_CUSTOM_FIELDS.START_DATE_ALT] = startDate; // Start Date (duplicate)
-    fields[HMG_CUSTOM_FIELDS.GANTT_START_DATE] = startDate; // Gantt Start Date
+    fields[HMG_CUSTOM_FIELDS.START_DATE] = startDate; // Start Date (customfield_10187)
+    fields[HMG_CUSTOM_FIELDS.START_DATE_ALT] = startDate; // Start Date (customfield_10753)
+    fields[HMG_CUSTOM_FIELDS.START_DATE_590] = startDate; // Start Date (customfield_10590)
+    fields[HMG_CUSTOM_FIELDS.GANTT_START_DATE] = startDate; // Gantt Start Date (customfield_10995)
   }
 
   // assignee 매핑 (Ignite accountId → HMG accountId)

@@ -322,7 +322,7 @@ export const IGNITE_CUSTOM_FIELDS = {
 export const HMG_CUSTOM_FIELDS = {
   START_DATE: 'customfield_10187', // Start Date
   START_DATE_ALT: 'customfield_10753', // Start Date (duplicate)
-  END_DATE: 'customfield_10590', // End Date
+  START_DATE_590: 'customfield_10590', // Start Date (세 번째 중복 필드)
   GANTT_START_DATE: 'customfield_10995', // Gantt Start Date
   GANTT_END_DATE: 'customfield_10996', // Gantt End Date
 } as const;
