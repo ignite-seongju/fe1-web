@@ -1,0 +1,34 @@
+name: Daily Jira Sync
+
+on:
+  schedule:
+    # 매일 한국시간 오전 9시 (UTC 0시)
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 수동 실행 가능
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run daily sync
+        env:
+          BATCH_MODE: 'true'
+          IGNITE_JIRA_EMAIL: ${{ secrets.IGNITE_JIRA_EMAIL }}
+          IGNITE_JIRA_API_TOKEN: ${{ secrets.IGNITE_JIRA_API_TOKEN }}
+          HMG_JIRA_EMAIL: ${{ secrets.HMG_JIRA_EMAIL }}
+          HMG_JIRA_API_TOKEN: ${{ secrets.HMG_JIRA_API_TOKEN }}
+        run: npx tsx scripts/daily-sync.ts

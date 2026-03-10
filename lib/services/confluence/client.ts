@@ -14,6 +14,7 @@ export class ConfluenceEpicClient {
 
   /**
    * 허용된 에픽 목록 조회 (캐시 포함)
+   * 배치 모드(BATCH_MODE=true)에서는 ConfluenceEpicManager를 직접 사용
    */
   static async getAllowedEpics(
     forceRefresh = false
@@ -28,7 +29,22 @@ export class ConfluenceEpicClient {
         return { success: true, data: this.cache };
       }
 
-      // API Route 호출
+      // 배치 모드: ConfluenceEpicManager 직접 호출 (서버사이드)
+      if (
+        typeof process !== 'undefined' &&
+        process.env?.BATCH_MODE === 'true'
+      ) {
+        const { ConfluenceEpicManager } = await import('./epic-manager');
+        const result =
+          await ConfluenceEpicManager.getAllowedEpics(forceRefresh);
+        if (result.success && result.data) {
+          this.cache = result.data;
+          this.lastFetch = Date.now();
+        }
+        return result;
+      }
+
+      // API Route 호출 (브라우저)
       const response = await fetch(
         `/api/confluence/epics?refresh=${forceRefresh}`
       );

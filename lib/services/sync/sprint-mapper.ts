@@ -2,6 +2,7 @@
 
 import { SprintInfo } from './types';
 import { BOARD_IDS } from '@/lib/constants/jira';
+import { JiraClient } from '@/lib/services/jira/client';
 
 /**
  * 스프린트 캐시 클래스
@@ -9,6 +10,7 @@ import { BOARD_IDS } from '@/lib/constants/jira';
  */
 class SprintCache {
   private cache = new Map<number, SprintInfo[]>();
+  private client = new JiraClient('ignite');
 
   async getSprintsForBoard(boardId: number): Promise<SprintInfo[]> {
     if (this.cache.has(boardId)) {
@@ -22,27 +24,22 @@ class SprintCache {
 
   private async fetchSprints(boardId: number): Promise<SprintInfo[]> {
     try {
-      // Agile API 호출 (프록시 통과)
-      const response = await fetch(
-        `/api/jira/ignite/agile/1.0/board/${boardId}/sprint?state=active,future&maxResults=50`
-      );
+      const result = await this.client.get<{
+        values: Array<{
+          id: number;
+          name: string;
+          state: 'active' | 'future' | 'closed';
+        }>;
+      }>(`agile/1.0/board/${boardId}/sprint`, {
+        state: 'active,future',
+        maxResults: '50',
+      });
 
-      if (!response.ok) {
-        return [];
-      }
-
-      const jsonResult = await response.json();
-      if (jsonResult.success && jsonResult.data?.values) {
-        return jsonResult.data.values.map(
-          (sprint: {
-            id: number;
-            name: string;
-            state: 'active' | 'future' | 'closed';
-          }) => ({
-            ...sprint,
-            boardId,
-          })
-        );
+      if (result.success && result.data?.values) {
+        return result.data.values.map((sprint) => ({
+          ...sprint,
+          boardId,
+        }));
       }
       return [];
     } catch {
