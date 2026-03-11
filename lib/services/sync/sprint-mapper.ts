@@ -1,8 +1,8 @@
 // 스프린트 매핑 로직 (캐싱 포함)
 
 import { SprintInfo } from './types';
-import { BOARD_IDS } from '@/lib/constants/jira';
 import { JiraClient } from '@/lib/services/jira/client';
+import { supabaseServer } from '@/lib/supabase-server';
 
 /**
  * 스프린트 캐시 클래스
@@ -55,12 +55,33 @@ class SprintCache {
 // 싱글톤 인스턴스
 const sprintCache = new SprintCache();
 
+// 프로젝트별 board_id 캐시 (DB 조회 결과)
+const boardIdCache = new Map<string, number>();
+
+async function getBoardId(projectKey: string): Promise<number | null> {
+  if (boardIdCache.has(projectKey)) {
+    return boardIdCache.get(projectKey)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('projects')
+    .select('board_id')
+    .eq('name', projectKey)
+    .single();
+
+  if (data?.board_id) {
+    boardIdCache.set(projectKey, data.board_id);
+    return data.board_id;
+  }
+  return null;
+}
+
 /**
- * FEHG 스프린트 이름에서 기간 추출
- * 예: "FEHG 2511" → "2511"
+ * 소스 프로젝트 스프린트 이름에서 기간 추출
+ * 예: "FEHG 2511" → "2511", "PROJ 2511" → "2511"
  */
 function extractSprintPeriod(sprintName: string): string | null {
-  const match = sprintName.match(/FEHG\s+(\d{4})/);
+  const match = sprintName.match(/\w+\s+(\d{4})/);
   return match ? match[1] : null;
 }
 
@@ -103,7 +124,8 @@ export async function mapSprintToTarget(
   const targetSprintName = buildTargetSprintName(targetProject, fullYearMonth);
 
   // 4. 대상 보드의 스프린트 조회 (캐시 사용)
-  const boardId = BOARD_IDS[targetProject];
+  const boardId = await getBoardId(targetProject);
+  if (!boardId) return null;
   const targetSprints = await sprintCache.getSprintsForBoard(boardId);
 
   // 5. 이름으로 매칭
@@ -119,6 +141,7 @@ export async function mapSprintToTarget(
  */
 export function initSprintCache() {
   sprintCache.clear();
+  boardIdCache.clear();
 }
 
 /**
@@ -127,9 +150,10 @@ export function initSprintCache() {
 export async function preloadSprintCache(
   projects: Array<'KQ' | 'HDD' | 'HB'>
 ): Promise<void> {
+  const boardIds = await Promise.all(projects.map((p) => getBoardId(p)));
   await Promise.all(
-    projects.map((project) =>
-      sprintCache.getSprintsForBoard(BOARD_IDS[project])
-    )
+    boardIds
+      .filter((id): id is number => id !== null)
+      .map((boardId) => sprintCache.getSprintsForBoard(boardId))
   );
 }

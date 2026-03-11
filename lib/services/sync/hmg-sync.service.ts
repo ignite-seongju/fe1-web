@@ -8,7 +8,9 @@ import {
   extractAutowayKey,
   isValidAutowayLink,
 } from './field-mapper';
-import { syncStatusWithPath } from './transition-helper';
+import { mapFieldsFromDb, getSyncProfileInfo } from './db-field-mapper';
+import { SyncOptions } from './types';
+import { syncStatusWithPath, syncStatusWithPathFromDb } from './transition-helper';
 import { jira } from '@/lib/services/jira';
 import { IGNITE_CUSTOM_FIELDS, JIRA_ENDPOINTS } from '@/lib/constants/jira';
 
@@ -26,7 +28,7 @@ let autowayCreateIssueTypeIdCache: string | null = null;
 export class HMGSyncService {
   constructor(private logger: SyncLogger) {}
 
-  private async resolveAutowayCreateIssueType(): Promise<
+  private async resolveCreateIssueType(targetProjectKey: string): Promise<
     { id: string } | { name: string }
   > {
     // 이미 한번 찾았으면 재사용
@@ -35,7 +37,7 @@ export class HMGSyncService {
     }
 
     try {
-      const projectResult = await jira.hmg.getProject('AUTOWAY');
+      const projectResult = await jira.hmg.getProject(targetProjectKey);
       const projectData = projectResult.success ? projectResult.data : null;
 
       // Jira /project/{key} 응답에는 issueTypes가 포함됨(타입 정의엔 빠져있어서 any 캐스팅)
@@ -48,7 +50,7 @@ export class HMGSyncService {
 
       if (!issueTypes || issueTypes.length === 0) {
         this.logger.warning(
-          'AUTOWAY: 프로젝트 issueTypes 조회 실패(비어있음) → issuetype name으로 fallback'
+          `${targetProjectKey}: 프로젝트 issueTypes 조회 실패(비어있음) → issuetype name으로 fallback`
         );
         return { name: '작업' };
       }
@@ -71,12 +73,12 @@ export class HMGSyncService {
 
       autowayCreateIssueTypeIdCache = chosen.id;
       this.logger.info(
-        `AUTOWAY: issuetype 선택 → "${chosen.name}" (id=${chosen.id})`
+        `${targetProjectKey}: issuetype 선택 → "${chosen.name}" (id=${chosen.id})`
       );
       return { id: chosen.id };
     } catch (e) {
       this.logger.warning(
-        `AUTOWAY: issuetype 조회 중 예외 → name fallback ("작업") - ${
+        `${targetProjectKey}: issuetype 조회 중 예외 → name fallback ("작업") - ${
           e instanceof Error ? e.message : String(e)
         }`
       );
@@ -89,11 +91,18 @@ export class HMGSyncService {
    */
   async syncTicket(
     fehgTicket: JiraIssue,
-    assigneeAccountId: string
+    assigneeAccountId: string,
+    teamUsers?: SyncOptions['teamUsers'],
+    syncProfileId?: string
   ): Promise<SyncResult | null> {
     try {
+      // DB 기반: 프로필에서 link_field와 target project 조회
+      const profileInfo = syncProfileId ? await getSyncProfileInfo(syncProfileId) : null;
+      const linkFieldId = profileInfo?.linkField || IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK;
+      const targetProjectKey = profileInfo?.targetProjectKey || 'AUTOWAY';
+
       const customFields = fehgTicket.fields;
-      const rawLink = customFields[IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK];
+      const rawLink = customFields[linkFieldId];
       const hmgLinkField =
         typeof rawLink === 'string'
           ? rawLink.trim()
@@ -107,40 +116,49 @@ export class HMGSyncService {
 
       if (hmgLinkField) {
         this.logger.info(
-          `${fehgTicket.key}: customfield_10306 감지됨 → ${hmgLinkField}`
+          `${fehgTicket.key}: ${linkFieldId} 감지됨 → ${hmgLinkField}`
         );
       } else {
         this.logger.info(
-          `${fehgTicket.key}: customfield_10306 비어 있음 → 신규 생성`
+          `${fehgTicket.key}: ${linkFieldId} 비어 있음 → 신규 생성`
         );
       }
 
-      // customfield_10306 확인 및 분기
-      // 참고: 구 HMG URL은 사전 마이그레이션으로 모두 신 URL로 변환됨
-      if (!hmgLinkField || !isValidAutowayLink(hmgLinkField)) {
-        // 신규 생성 플로우: customfield_10306이 비어있거나 AUTOWAY 키가 없음
+      // link field 확인 및 분기
+      const targetKeyPattern = new RegExp(`${targetProjectKey}-\\d+`);
+      if (!hmgLinkField || !targetKeyPattern.test(hmgLinkField)) {
         return await this.createAndLinkAutowayTicket(
           fehgTicket,
-          assigneeAccountId
+          assigneeAccountId,
+          teamUsers,
+          syncProfileId,
+          profileInfo
         );
       }
 
-      // 기존 티켓 업데이트 플로우: customfield_10306에서 AUTOWAY 키 추출
-      const autowayKey = extractAutowayKey(hmgLinkField);
-      if (!autowayKey) {
+      // 기존 티켓 업데이트 플로우
+      const match = hmgLinkField.match(new RegExp(`(${targetProjectKey}-\\d+)`));
+      const targetKey = match ? match[1] : null;
+      if (!targetKey) {
         this.logger.warning(
-          `${fehgTicket.key}: AUTOWAY 키 추출 실패 (${hmgLinkField}) - 신규 생성`
+          `${fehgTicket.key}: ${targetProjectKey} 키 추출 실패 (${hmgLinkField}) - 신규 생성`
         );
         return await this.createAndLinkAutowayTicket(
           fehgTicket,
-          assigneeAccountId
+          assigneeAccountId,
+          teamUsers,
+          syncProfileId,
+          profileInfo
         );
       }
 
       return await this.updateAutowayTicket(
         fehgTicket,
-        autowayKey,
-        assigneeAccountId
+        targetKey,
+        assigneeAccountId,
+        teamUsers,
+        syncProfileId,
+        profileInfo
       );
     } catch (error) {
       const errorMessage =
@@ -157,22 +175,30 @@ export class HMGSyncService {
    */
   private async createAndLinkAutowayTicket(
     fehgTicket: JiraIssue,
-    assigneeAccountId: string
+    assigneeAccountId: string,
+    teamUsers?: SyncOptions['teamUsers'],
+    syncProfileId?: string,
+    profileInfo?: { linkField: string | null; targetProjectKey: string; targetInstance: string } | null
   ): Promise<SyncResult> {
+    const targetProjectKey = profileInfo?.targetProjectKey || 'AUTOWAY';
+    const linkFieldId = profileInfo?.linkField || IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK;
+
     try {
-      this.logger.info(`${fehgTicket.key}: AUTOWAY 티켓 생성 시작...`);
+      this.logger.info(`${fehgTicket.key}: ${targetProjectKey} 티켓 생성 시작...${syncProfileId ? ' (DB 매핑)' : ''}`);
 
-      // 1. 필드 매핑
-      const mappedFields = mapFieldsForAutoway(fehgTicket, assigneeAccountId);
-      const autowayIssueType = await this.resolveAutowayCreateIssueType();
+      // 1. 필드 매핑 (DB 기반 또는 하드코딩)
+      const mappedFields = syncProfileId
+        ? await mapFieldsFromDb(fehgTicket, syncProfileId, targetProjectKey)
+        : mapFieldsForAutoway(fehgTicket, assigneeAccountId, teamUsers);
 
-      // 2. AUTOWAY 티켓 생성
+      const autowayIssueType = await this.resolveCreateIssueType(targetProjectKey);
+
+      // 2. 티켓 생성
       const createPayload: JiraIssueCreatePayload = {
         fields: {
-          project: { key: 'AUTOWAY' },
+          project: { key: targetProjectKey },
           issuetype: autowayIssueType,
           summary: fehgTicket.fields.summary,
-          // 추후 적용: customfield_10002: autowayEpicKey (Epic Link)
           ...mappedFields,
         },
       };
@@ -180,7 +206,6 @@ export class HMGSyncService {
       const createResult = await jira.hmg.createIssue(createPayload);
 
       if (!createResult.success || !createResult.data) {
-        // Jira API 에러 상세 로그
         const errorDetails = (
           createResult as { details?: unknown; error?: string }
         ).details;
@@ -189,32 +214,32 @@ export class HMGSyncService {
             `${fehgTicket.key}: Jira API 에러 상세 → ${JSON.stringify(errorDetails)}`
           );
         }
-        throw new Error(createResult.error || 'AUTOWAY 티켓 생성 실패');
+        throw new Error(createResult.error || `${targetProjectKey} 티켓 생성 실패`);
       }
 
-      const autowayKey = createResult.data.key;
-      this.logger.success(`${autowayKey}: AUTOWAY 티켓 생성 완료`);
+      const createdKey = createResult.data.key;
+      this.logger.success(`${createdKey}: ${targetProjectKey} 티켓 생성 완료`);
 
-      // 3. FEHG 티켓의 customfield_10306에 URL 저장
-      const autowayUrl = `${JIRA_ENDPOINTS.HMG}/browse/${autowayKey}`;
+      // 3. FEHG 티켓의 link field에 URL 저장
+      const targetUrl = `${JIRA_ENDPOINTS.HMG}/browse/${createdKey}`;
       const linkResult = await jira.ignite.updateIssueFields(fehgTicket.key, {
-        [IGNITE_CUSTOM_FIELDS.HMG_JIRA_LINK]: autowayUrl,
+        [linkFieldId]: targetUrl,
       });
 
       if (!linkResult.success) {
         this.logger.warning(
-          `${fehgTicket.key}: AUTOWAY 링크 저장 실패 (티켓은 생성됨)`
+          `${fehgTicket.key}: ${targetProjectKey} 링크 저장 실패 (티켓은 생성됨)`
         );
       } else {
-        this.logger.success(`${fehgTicket.key}: AUTOWAY 링크 저장 완료`);
+        this.logger.success(`${fehgTicket.key}: ${targetProjectKey} 링크 저장 완료`);
       }
 
-      // 4. 생성된 AUTOWAY 티켓 업데이트 (상태 동기화)
-      await this.syncAutowayStatus(fehgTicket, autowayKey);
+      // 4. 상태 동기화
+      await this.syncAutowayStatus(fehgTicket, createdKey, syncProfileId);
 
       return {
         fehgKey: fehgTicket.key,
-        targetKey: autowayKey,
+        targetKey: createdKey,
         targetProject: 'AUTOWAY',
         success: true,
         message: '신규 생성 및 동기화 완료',
@@ -224,7 +249,7 @@ export class HMGSyncService {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.logger.error(
-        `${fehgTicket.key}: AUTOWAY 생성 실패 - ${errorMessage}`
+        `${fehgTicket.key}: ${targetProjectKey} 생성 실패 - ${errorMessage}`
       );
 
       return {
@@ -242,46 +267,52 @@ export class HMGSyncService {
    */
   private async updateAutowayTicket(
     fehgTicket: JiraIssue,
-    autowayKey: string,
-    assigneeAccountId: string
+    targetKey: string,
+    assigneeAccountId: string,
+    teamUsers?: SyncOptions['teamUsers'],
+    syncProfileId?: string,
+    profileInfo?: { targetProjectKey: string } | null
   ): Promise<SyncResult> {
-    try {
-      this.logger.info(`${autowayKey}: 업데이트 시작...`);
+    const targetProjectKey = profileInfo?.targetProjectKey || 'AUTOWAY';
 
-      // 1. 필드 매핑
-      const mappedFields = mapFieldsForAutoway(fehgTicket, assigneeAccountId);
+    try {
+      this.logger.info(`${targetKey}: 업데이트 시작...${syncProfileId ? ' (DB 매핑)' : ''}`);
+
+      // 1. 필드 매핑 (DB 기반 또는 하드코딩)
+      const mappedFields = syncProfileId
+        ? await mapFieldsFromDb(fehgTicket, syncProfileId, targetProjectKey)
+        : mapFieldsForAutoway(fehgTicket, assigneeAccountId, teamUsers);
 
       // 2. 필드 매핑 로그
       this.logger.info(
-        `${autowayKey}: 업데이트 필드 → ${JSON.stringify(Object.keys(mappedFields))}`
+        `${targetKey}: 업데이트 필드 → ${JSON.stringify(Object.keys(mappedFields))}`
       );
 
       // 3. 필드 업데이트
-      const updateResult = await jira.hmg.updateIssue(autowayKey, {
+      const updateResult = await jira.hmg.updateIssue(targetKey, {
         fields: mappedFields,
       });
 
       if (!updateResult.success) {
-        // Jira API 에러 상세 로그
         const errorDetails = (
           updateResult as { details?: unknown; error?: string }
         ).details;
         if (errorDetails) {
           this.logger.error(
-            `${autowayKey}: Jira API 에러 상세 → ${JSON.stringify(errorDetails)}`
+            `${targetKey}: Jira API 에러 상세 → ${JSON.stringify(errorDetails)}`
           );
         }
         throw new Error(updateResult.error || '필드 업데이트 실패');
       }
 
-      this.logger.success(`${autowayKey}: 필드 업데이트 완료`);
+      this.logger.success(`${targetKey}: 필드 업데이트 완료`);
 
-      // 3. 상태 동기화
-      await this.syncAutowayStatus(fehgTicket, autowayKey);
+      // 4. 상태 동기화
+      await this.syncAutowayStatus(fehgTicket, targetKey, syncProfileId);
 
       return {
         fehgKey: fehgTicket.key,
-        targetKey: autowayKey,
+        targetKey,
         targetProject: 'AUTOWAY',
         success: true,
         message: '동기화 완료',
@@ -290,11 +321,11 @@ export class HMGSyncService {
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
-      this.logger.error(`${autowayKey}: 업데이트 실패 - ${errorMessage}`);
+      this.logger.error(`${targetKey}: 업데이트 실패 - ${errorMessage}`);
 
       return {
         fehgKey: fehgTicket.key,
-        targetKey: autowayKey,
+        targetKey,
         targetProject: 'AUTOWAY',
         success: false,
         error: errorMessage,
@@ -307,47 +338,59 @@ export class HMGSyncService {
    */
   private async syncAutowayStatus(
     fehgTicket: JiraIssue,
-    autowayKey: string
+    targetKey: string,
+    syncProfileId?: string
   ): Promise<void> {
     const fehgStatusId = fehgTicket.fields.status?.id;
     if (!fehgStatusId) return;
 
     try {
-      // 1. 현재 AUTOWAY 티켓의 상태 조회
-      const autowayIssue = await jira.hmg.getIssue(autowayKey);
-      if (!autowayIssue.success || !autowayIssue.data) {
-        this.logger.warning(`${autowayKey}: 상태 조회 실패 - 상태 동기화 스킵`);
+      // 1. 현재 타겟 티켓의 상태 조회
+      const targetIssue = await jira.hmg.getIssue(targetKey);
+      if (!targetIssue.success || !targetIssue.data) {
+        this.logger.warning(`${targetKey}: 상태 조회 실패 - 상태 동기화 스킵`);
         return;
       }
 
-      const currentStatusId = autowayIssue.data.fields.status?.id;
+      const currentStatusId = targetIssue.data.fields.status?.id;
       if (!currentStatusId) {
-        this.logger.warning(`${autowayKey}: 현재 상태 ID 없음 - 상태 동기화 스킵`);
+        this.logger.warning(`${targetKey}: 현재 상태 ID 없음 - 상태 동기화 스킵`);
         return;
       }
 
-      // 2. 동적 경로 탐색 및 순차 실행
-      const result = await syncStatusWithPath(
-        'hmg',
-        autowayKey,
-        fehgStatusId,
-        currentStatusId,
-        async (issueKey, transitionId) => {
-          return await jira.hmg.updateIssueStatus(issueKey, transitionId);
-        },
-        this.logger
-      );
+      // 2. DB 기반 또는 하드코딩 상태 동기화
+      const executeTransitionFn = async (issueKey: string, transitionId: string) => {
+        return await jira.hmg.updateIssueStatus(issueKey, transitionId);
+      };
+
+      const result = syncProfileId
+        ? await syncStatusWithPathFromDb(
+            syncProfileId,
+            targetKey,
+            fehgStatusId,
+            currentStatusId,
+            executeTransitionFn,
+            this.logger
+          )
+        : await syncStatusWithPath(
+            'hmg',
+            targetKey,
+            fehgStatusId,
+            currentStatusId,
+            executeTransitionFn,
+            this.logger
+          );
 
       if (!result.success && result.stepsExecuted > 0) {
         this.logger.warning(
-          `${autowayKey}: 상태 동기화 부분 완료 (${result.stepsExecuted}단계 실행 후 실패)`
+          `${targetKey}: 상태 동기화 부분 완료 (${result.stepsExecuted}단계 실행 후 실패)`
         );
       }
     } catch (error) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.logger.warning(
-        `${autowayKey}: 상태 동기화 실패 (필드는 업데이트됨) - ${errorMessage}`
+        `${targetKey}: 상태 동기화 실패 (필드는 업데이트됨) - ${errorMessage}`
       );
     }
   }

@@ -1,0 +1,235 @@
+// DB 기반 필드 매핑 로직
+// sync_field_mappings 테이블에서 매핑 규칙을 읽어 필드를 변환
+
+import { JiraIssue } from '@/lib/types/jira';
+import { supabaseServer } from '@/lib/supabase-server';
+import { mapSprintToTarget } from './sprint-mapper';
+
+interface DbFieldMapping {
+  source_field: string;
+  target_field: string;
+  transform_type: string; // 'copy' | 'sprint_map' | 'account_map' | 'custom'
+  transform_config: Record<string, unknown> | null;
+}
+
+// 프로필별 매핑 캐시 (동기화 세션 동안 유지)
+const mappingCache = new Map<string, DbFieldMapping[]>();
+
+/**
+ * 프로필의 필드 매핑 조회 (캐시)
+ */
+async function getFieldMappings(profileId: string): Promise<DbFieldMapping[]> {
+  if (mappingCache.has(profileId)) {
+    return mappingCache.get(profileId)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('sync_field_mappings')
+    .select('source_field, target_field, transform_type, transform_config')
+    .eq('profile_id', profileId);
+
+  const mappings = data || [];
+  mappingCache.set(profileId, mappings);
+  return mappings;
+}
+
+/**
+ * DB 매핑 캐시 초기화
+ */
+export function clearDbMappingCache() {
+  mappingCache.clear();
+  accountMapCache.clear();
+  profileInfoCache.clear();
+  allowedEpicsCache.clear();
+}
+
+/**
+ * DB 기반 필드 매핑 실행
+ * sync_field_mappings에 저장된 규칙에 따라 FEHG 티켓 필드를 대상 필드로 변환
+ */
+export async function mapFieldsFromDb(
+  fehgTicket: JiraIssue,
+  profileId: string,
+  targetProjectKey: string
+): Promise<Record<string, unknown>> {
+  const mappings = await getFieldMappings(profileId);
+  const fields: Record<string, unknown> = {};
+  const fehgFields = fehgTicket.fields;
+
+  for (const mapping of mappings) {
+    const { source_field, target_field, transform_type } = mapping;
+
+    switch (transform_type) {
+      case 'copy': {
+        // 단순 복사
+        const value = getFieldValue(fehgTicket, fehgFields, source_field);
+        if (value !== undefined && value !== null) {
+          // assignee는 accountId 형태로 래핑
+          if (source_field === 'assignee' && typeof value === 'object' && value !== null && 'accountId' in value) {
+            fields[target_field] = { accountId: (value as { accountId: string }).accountId };
+          } else {
+            fields[target_field] = value;
+          }
+        }
+        break;
+      }
+
+      case 'sprint_map': {
+        // 스프린트 매핑 (FEHG 스프린트 이름 → 대상 프로젝트 스프린트 ID)
+        const sprint = fehgFields[source_field] as
+          | Array<{ id: number; name: string }>
+          | undefined;
+
+        if (sprint && sprint.length > 0) {
+          const mappedSprintId = await mapSprintToTarget(
+            sprint[0].name,
+            targetProjectKey as 'KQ' | 'HDD' | 'HB'
+          );
+          if (mappedSprintId) {
+            fields[target_field] = mappedSprintId;
+          }
+        }
+        break;
+      }
+
+      case 'account_map': {
+        // 계정 매핑 (Ignite accountId → HMG accountId)
+        const sourceValue = getFieldValue(fehgTicket, fehgFields, source_field);
+        if (sourceValue && typeof sourceValue === 'object' && 'accountId' in sourceValue) {
+          const igniteAccountId = (sourceValue as { accountId: string }).accountId;
+          const hmgAccountId = await lookupHmgAccountId(igniteAccountId);
+          if (hmgAccountId) {
+            fields[target_field] = { accountId: hmgAccountId };
+          }
+        }
+        break;
+      }
+
+      default: {
+        // 알 수 없는 transform_type → copy로 폴백
+        const fallbackValue = getFieldValue(fehgTicket, fehgFields, source_field);
+        if (fallbackValue !== undefined && fallbackValue !== null) {
+          fields[target_field] = fallbackValue;
+        }
+        break;
+      }
+    }
+  }
+
+  return fields;
+}
+
+// 계정 매핑 캐시 (동기화 세션 동안 유지)
+const accountMapCache = new Map<string, string | null>();
+
+/**
+ * Ignite accountId → HMG accountId 조회 (캐시)
+ */
+async function lookupHmgAccountId(igniteAccountId: string): Promise<string | null> {
+  if (accountMapCache.has(igniteAccountId)) {
+    return accountMapCache.get(igniteAccountId)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('users')
+    .select('hmg_account_id')
+    .eq('ignite_account_id', igniteAccountId)
+    .single();
+
+  const hmgAccountId = data?.hmg_account_id || null;
+  accountMapCache.set(igniteAccountId, hmgAccountId);
+  return hmgAccountId;
+}
+
+/**
+ * 동기화 프로필 정보 조회 (link_field, 타겟 프로젝트 정보)
+ */
+export interface SyncProfileInfo {
+  id: string;
+  name: string;
+  linkField: string | null;
+  targetProjectKey: string;
+  targetInstance: string;
+  sourceProjectKey: string;
+  sourceInstance: string;
+}
+
+const profileInfoCache = new Map<string, SyncProfileInfo>();
+
+export async function getSyncProfileInfo(profileId: string): Promise<SyncProfileInfo | null> {
+  if (profileInfoCache.has(profileId)) {
+    return profileInfoCache.get(profileId)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('sync_profiles')
+    .select(`
+      id, name, link_field,
+      source:source_project_id(name, jira_instance),
+      target:target_project_id(name, jira_instance)
+    `)
+    .eq('id', profileId)
+    .single();
+
+  if (!data) return null;
+
+  const source = data.source as unknown as { name: string; jira_instance: string };
+  const target = data.target as unknown as { name: string; jira_instance: string };
+
+  const info: SyncProfileInfo = {
+    id: data.id,
+    name: data.name,
+    linkField: data.link_field,
+    targetProjectKey: target.name,
+    targetInstance: target.jira_instance,
+    sourceProjectKey: source.name,
+    sourceInstance: source.jira_instance,
+  };
+
+  profileInfoCache.set(profileId, info);
+  return info;
+}
+
+/**
+ * DB에서 허용된 에픽 키 목록 조회
+ */
+const allowedEpicsCache = new Map<string, string[]>();
+
+export async function getAllowedEpicsFromDb(profileId: string): Promise<string[]> {
+  if (allowedEpicsCache.has(profileId)) {
+    return allowedEpicsCache.get(profileId)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('sync_profile_allowed_epics')
+    .select('epic_key')
+    .eq('profile_id', profileId);
+
+  const keys = data?.map((row) => row.epic_key) || [];
+  allowedEpicsCache.set(profileId, keys);
+  return keys;
+}
+
+/**
+ * FEHG 티켓에서 필드 값 추출
+ */
+function getFieldValue(
+  ticket: JiraIssue,
+  fields: JiraIssue['fields'],
+  fieldId: string
+): unknown {
+  // 표준 필드
+  switch (fieldId) {
+    case 'summary':
+      return ticket.fields.summary;
+    case 'assignee':
+      return ticket.fields.assignee;
+    case 'duedate':
+      return fields.duedate;
+    case 'timetracking':
+      return fields.timetracking;
+    default:
+      // 커스텀 필드 (customfield_XXXXX)
+      return fields[fieldId];
+  }
+}

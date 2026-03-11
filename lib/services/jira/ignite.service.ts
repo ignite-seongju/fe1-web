@@ -10,33 +10,46 @@ export class IgniteJiraService extends BaseJiraService {
   }
 
   /**
-   * FEHG 프로젝트 이슈 조회
-   * (작업자들이 직접 관리하는 프로젝트)
+   * 소스 프로젝트 이슈 조회
    */
-  async getFEHGIssues() {
-    return this.getProjectIssues('FEHG');
+  async getSourceProjectIssues(projectKey: string = 'FEHG') {
+    return this.getProjectIssues(projectKey);
   }
 
   /**
-   * FEHG 프로젝트의 완료되지 않은 에픽 조회
+   * 소스 프로젝트의 완료되지 않은 에픽 조회
    */
-  async getFEHGIncompleteEpics() {
-    const jql = `project = FEHG AND issuetype = 에픽 AND status != Done AND status != 완료 ORDER BY created DESC`;
+  async getIncompleteEpicsByProject(projectKey: string = 'FEHG') {
+    const jql = `project = ${projectKey} AND issuetype = 에픽 AND status != Done AND status != 완료 ORDER BY created DESC`;
     return this.searchIssues(jql);
   }
 
   /**
-   * FEHG를 제외한 모든 프로젝트 조회
+   * @deprecated getFEHGIncompleteEpics → getIncompleteEpicsByProject 사용
    */
-  async getNonFEHGProjects() {
+  async getFEHGIncompleteEpics(projectKey: string = 'FEHG') {
+    return this.getIncompleteEpicsByProject(projectKey);
+  }
+
+  /**
+   * 특정 프로젝트를 제외한 모든 프로젝트 조회
+   */
+  async getProjectsExcluding(excludeKey: string = 'FEHG') {
     const result = await this.getProjects();
     if (result.success && result.data) {
       return {
         success: true,
-        data: result.data.filter((project) => project.key !== 'FEHG'),
+        data: result.data.filter((project) => project.key !== excludeKey),
       };
     }
     return result;
+  }
+
+  /**
+   * @deprecated getNonFEHGProjects → getProjectsExcluding 사용
+   */
+  async getNonFEHGProjects() {
+    return this.getProjectsExcluding('FEHG');
   }
 
   /**

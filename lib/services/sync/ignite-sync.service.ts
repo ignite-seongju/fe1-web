@@ -4,6 +4,7 @@ import { JiraIssue } from '@/lib/types/jira';
 import { SyncResult, SyncTargetProject } from './types';
 import { SyncLogger } from './logger';
 import { mapFieldsForIgniteProject } from './field-mapper';
+import { mapFieldsFromDb } from './db-field-mapper';
 import { syncStatusWithPath } from './transition-helper';
 import { jira } from '@/lib/services/jira';
 
@@ -48,7 +49,8 @@ export class IgniteSyncService {
    */
   async syncTicket(
     fehgTicket: JiraIssue,
-    targetProject: 'KQ' | 'HDD' | 'HB'
+    targetProject: 'KQ' | 'HDD' | 'HB',
+    syncProfileId?: string
   ): Promise<SyncResult[]> {
     const results: SyncResult[] = [];
 
@@ -72,7 +74,8 @@ export class IgniteSyncService {
         const result = await this.updateTargetTicket(
           fehgTicket,
           targetKey,
-          targetProject
+          targetProject,
+          syncProfileId
         );
         results.push(result);
       }
@@ -92,16 +95,16 @@ export class IgniteSyncService {
   private async updateTargetTicket(
     fehgTicket: JiraIssue,
     targetKey: string,
-    targetProject: 'KQ' | 'HDD' | 'HB'
+    targetProject: 'KQ' | 'HDD' | 'HB',
+    syncProfileId?: string
   ): Promise<SyncResult> {
     try {
-      this.logger.info(`${targetKey}: 업데이트 시작...`);
+      this.logger.info(`${targetKey}: 업데이트 시작...${syncProfileId ? ' (DB 매핑)' : ''}`);
 
-      // 1. 필드 매핑 (스프린트 매핑 포함)
-      const mappedFields = await mapFieldsForIgniteProject(
-        fehgTicket,
-        targetProject
-      );
+      // 1. 필드 매핑 (DB 기반 또는 하드코딩)
+      const mappedFields = syncProfileId
+        ? await mapFieldsFromDb(fehgTicket, syncProfileId, targetProject)
+        : await mapFieldsForIgniteProject(fehgTicket, targetProject);
 
       // 2. 필드 업데이트
       const updateResult = await jira.ignite.updateIssueFields(

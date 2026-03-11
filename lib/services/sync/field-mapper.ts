@@ -5,10 +5,9 @@ import {
   STATUS_MAPPING,
   IGNITE_CUSTOM_FIELDS,
   HMG_CUSTOM_FIELDS,
-  JIRA_USERS,
   JIRA_ENDPOINTS,
 } from '@/lib/constants/jira';
-import { SyncTargetProject } from './types';
+import { SyncTargetProject, SyncOptions } from './types';
 import { mapSprintToTarget } from './sprint-mapper';
 
 /**
@@ -72,7 +71,8 @@ export async function mapFieldsForIgniteProject(
  */
 export function mapFieldsForAutoway(
   fehgTicket: JiraIssue,
-  assigneeAccountId: string
+  assigneeAccountId: string,
+  teamUsers?: SyncOptions['teamUsers']
 ): Record<string, unknown> {
   const fields: Record<string, unknown> = {};
   const fehgFields = fehgTicket.fields;
@@ -130,7 +130,7 @@ export function mapFieldsForAutoway(
   }
 
   // assignee 매핑 (Ignite accountId → HMG accountId)
-  const userInfo = Object.values(JIRA_USERS).find(
+  const userInfo = teamUsers?.find(
     (user) => user.igniteAccountId === assigneeAccountId
   );
 

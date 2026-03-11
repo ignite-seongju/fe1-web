@@ -4,8 +4,155 @@
  */
 
 import { STATUS_WORKFLOW, STATUS_TARGET_MAPPING } from '@/lib/constants/jira';
+import { supabaseServer } from '@/lib/supabase-server';
 
 export type JiraInstance = 'ignite' | 'hmg';
+
+// DB 기반 캐시 (동기화 세션 동안 유지)
+const dbStatusMappingCache = new Map<string, Record<string, string>>();
+const dbWorkflowCache = new Map<string, Record<string, Record<string, string>>>();
+
+export function clearTransitionCache() {
+  dbStatusMappingCache.clear();
+  dbWorkflowCache.clear();
+}
+
+/**
+ * DB에서 프로필별 상태 매핑 조회 (캐시)
+ */
+async function getDbStatusMapping(profileId: string): Promise<Record<string, string>> {
+  if (dbStatusMappingCache.has(profileId)) {
+    return dbStatusMappingCache.get(profileId)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('sync_profile_status_mappings')
+    .select('source_status_id, target_status_id')
+    .eq('profile_id', profileId);
+
+  const mapping: Record<string, string> = {};
+  data?.forEach((row) => {
+    mapping[row.source_status_id] = row.target_status_id;
+  });
+
+  dbStatusMappingCache.set(profileId, mapping);
+  return mapping;
+}
+
+/**
+ * DB에서 프로필별 워크플로우 그래프 조회 (캐시)
+ */
+async function getDbWorkflow(profileId: string): Promise<Record<string, Record<string, string>>> {
+  if (dbWorkflowCache.has(profileId)) {
+    return dbWorkflowCache.get(profileId)!;
+  }
+
+  const { data } = await supabaseServer
+    .from('sync_profile_workflows')
+    .select('from_status_id, to_status_id, transition_id')
+    .eq('profile_id', profileId);
+
+  const workflow: Record<string, Record<string, string>> = {};
+  data?.forEach((row) => {
+    if (!workflow[row.from_status_id]) {
+      workflow[row.from_status_id] = {};
+    }
+    workflow[row.from_status_id][row.to_status_id] = row.transition_id;
+  });
+
+  dbWorkflowCache.set(profileId, workflow);
+  return workflow;
+}
+
+/**
+ * DB 기반 BFS 경로 탐색
+ */
+export async function findTransitionPathFromDb(
+  profileId: string,
+  currentStatusId: string,
+  targetStatusId: string
+): Promise<TransitionPath | null> {
+  if (currentStatusId === targetStatusId) {
+    return { statusPath: [], transitionPath: [] };
+  }
+
+  const workflow = await getDbWorkflow(profileId);
+
+  const queue: Array<{ statusId: string; path: string[]; transitions: string[] }> = [
+    { statusId: currentStatusId, path: [], transitions: [] },
+  ];
+  const visited = new Set<string>([currentStatusId]);
+
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    const nextTransitions = workflow[current.statusId];
+    if (!nextTransitions) continue;
+
+    for (const [nextStatusId, transitionId] of Object.entries(nextTransitions)) {
+      if (visited.has(nextStatusId)) continue;
+
+      const newPath = [...current.path, nextStatusId];
+      const newTransitions = [...current.transitions, transitionId];
+
+      if (nextStatusId === targetStatusId) {
+        return { statusPath: newPath, transitionPath: newTransitions };
+      }
+
+      visited.add(nextStatusId);
+      queue.push({ statusId: nextStatusId, path: newPath, transitions: newTransitions });
+    }
+  }
+
+  return null;
+}
+
+/**
+ * DB 기반 상태 동기화 통합 함수
+ */
+export async function syncStatusWithPathFromDb(
+  profileId: string,
+  issueKey: string,
+  fehgStatusId: string,
+  currentTargetStatusId: string,
+  executeTransition: (issueKey: string, transitionId: string) => Promise<{ success: boolean; error?: string }>,
+  logger?: { info: (msg: string) => void; error: (msg: string) => void; success: (msg: string) => void }
+): Promise<TransitionResult> {
+  const mapping = await getDbStatusMapping(profileId);
+  const targetStatusId = mapping[fehgStatusId] || null;
+
+  if (!targetStatusId) {
+    const error = `${fehgStatusId}: 매핑된 타겟 상태 없음 (DB)`;
+    logger?.error(`${issueKey}: ${error}`);
+    return { success: false, stepsExecuted: 0, error };
+  }
+
+  if (currentTargetStatusId === targetStatusId) {
+    logger?.info(`${issueKey}: 이미 타겟 상태 (${targetStatusId})`);
+    return { success: true, stepsExecuted: 0, finalStatusId: targetStatusId };
+  }
+
+  const path = await findTransitionPathFromDb(profileId, currentTargetStatusId, targetStatusId);
+
+  if (!path) {
+    const error = `${currentTargetStatusId} → ${targetStatusId}: 전이 경로 없음 (DB)`;
+    logger?.error(`${issueKey}: ${error}`);
+    return { success: false, stepsExecuted: 0, error };
+  }
+
+  logger?.info(
+    `${issueKey}: 상태 전이 경로 발견 (${path.transitionPath.length}단계: ${path.transitionPath.join(' → ')})`
+  );
+
+  const result = await executeTransitionPath(issueKey, path.transitionPath, executeTransition);
+
+  if (result.success) {
+    logger?.success(`${issueKey}: 상태 동기화 완료 (${result.stepsExecuted}단계 실행)`);
+  } else {
+    logger?.error(`${issueKey}: 상태 동기화 실패 - ${result.error}`);
+  }
+
+  return result;
+}
 
 interface TransitionPath {
   /** 거쳐야 할 상태 ID 목록 (현재 상태 제외, 타겟 상태 포함) */
