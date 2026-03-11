@@ -131,7 +131,7 @@ function resolveWarning(
   if (credentialMissing) {
     warnings.push({
       message: 'API Key 인증이 필요합니다',
-      detail: "(미인증시, '서성주'님 인증 정보로 동작합니다)",
+      detail: '미인증 시 동기화 등 주요 기능을 사용할 수 없습니다',
       href: `/settings/users?setup=${user.id}`,
       linkLabel: '사용자 설정',
       hideOnPath: '/settings/users',

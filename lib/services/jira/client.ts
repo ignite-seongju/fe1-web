@@ -1,5 +1,6 @@
 import { JiraApiResponse, JiraRequestOptions } from '@/lib/types/jira';
 import { JIRA_ENDPOINTS, JIRA_API_VERSION } from '@/lib/constants/jira';
+import { toast } from 'sonner';
 
 /**
  * Jira API 클라이언트
@@ -174,6 +175,18 @@ export class JiraClient {
       const result = await response.json();
 
       if (!result.success) {
+        // 인증 정보 미설정 시 toast 안내 (중복 방지)
+        if (response.status === 401 && result.code === 'CREDENTIALS_MISSING') {
+          toast.error('Jira API Key 인증이 필요합니다', {
+            id: 'jira-credentials-missing',
+            description: '사용자 설정에서 API Key를 등록해주세요.',
+            action: {
+              label: '설정으로 이동',
+              onClick: () => { window.location.href = '/settings/users'; },
+            },
+          });
+        }
+
         return {
           success: false,
           error: result.error || '요청 처리 중 오류가 발생했습니다.',

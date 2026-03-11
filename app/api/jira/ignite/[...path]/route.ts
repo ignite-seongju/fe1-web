@@ -54,9 +54,10 @@ async function handleJiraRequest(
       return NextResponse.json(
         {
           success: false,
-          error: 'Ignite Jira 인증 정보가 설정되지 않았습니다.',
+          error: 'Jira 인증 정보가 설정되지 않았습니다. 사용자 설정에서 API Key를 등록해주세요.',
+          code: 'CREDENTIALS_MISSING',
         },
-        { status: 500 }
+        { status: 401 }
       );
     }
 
